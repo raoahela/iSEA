@@ -95,23 +95,66 @@ class VideoLabel(QLabel):
             return
 
         if event.button() == Qt.MouseButton.LeftButton:
-            for ann in self.active_annotations:
-                if ann.get("delete_rect") and ann["delete_rect"].contains(pos):
-                    self.remove_annotation(ann)
-                    return       
+            main_win = self.window()
+            
+            # SAM 2 mode active
+            if hasattr(main_win, 'sam2_refinement_mode') and main_win.sam2_refinement_mode:
+                frame_coords = self.get_frame_coordinates(pos)
+                if frame_coords:
+                    x, y = frame_coords
+                    
+                    # Check if click is inside the SAM refinement bbox
+                    if hasattr(main_win, 'current_bb_for_refinement') and main_win.current_bb_for_refinement:
+                        bb = main_win.current_bb_for_refinement
+                        if bb["x1"] <= x <= bb["x2"] and bb["y1"] <= y <= bb["y2"]:
+                            # Click INSIDE → process SAM 2
+                            if hasattr(main_win, 'sam2_thread'):
+                                prompts = [(x, y, 1)]
+                                frame = self._get_frame_for_sam(main_win)
+                                if frame is not None:
+                                    main_win.sam2_thread.set_frame_and_prompts(
+                                        frame, main_win.current_frame_num, prompts
+                                    )
+                                    return  # Block drawing new bbox
+                        else:
+                            # Click OUTSIDE → auto-disable SAM 2
+                            main_win.toggle_sam2_refinement()
+                            # Continue to draw new bbox below
+                    else:
+                        # No bbox stored → auto-disable SAM 2
+                        main_win.toggle_sam2_refinement()
+                        # Continue to draw new bbox
+            
+            if event.button() == Qt.MouseButton.LeftButton:
+                for ann in self.active_annotations:
+                    if ann.get("delete_rect") and ann["delete_rect"].contains(pos):
+                        self.remove_annotation(ann)
+                        return       
 
-        if event.button() == Qt.MouseButton.LeftButton:
-            adjusted_pos = pos - video_rect.topLeft()
-            video_size   = video_rect.size()
-            self.start_point = QPointF(adjusted_pos.x() / video_size.width(),
-                                    adjusted_pos.y() / video_size.height())
-            self.end_point = self.start_point
-            self.drawing   = True
-            self.update()
-            return
-        
-        if event.button() == Qt.MouseButton.RightButton:
-            self.delete_annotation_at(pos, video_rect) 
+            if event.button() == Qt.MouseButton.LeftButton:
+                adjusted_pos = pos - video_rect.topLeft()
+                video_size   = video_rect.size()
+                self.start_point = QPointF(adjusted_pos.x() / video_size.width(),
+                                        adjusted_pos.y() / video_size.height())
+                self.end_point = self.start_point
+                self.drawing   = True
+                self.update()
+                return
+            
+            if event.button() == Qt.MouseButton.RightButton:
+                self.delete_annotation_at(pos, video_rect) 
+
+    def _get_frame_for_sam(self, main_win):
+        """Helper to get current frame for SAM"""
+        if hasattr(main_win, 'current_frame') and main_win.current_frame is not None:
+            return main_win.current_frame
+        elif hasattr(main_win, 'cap') and main_win.cap is not None:
+            current_pos = main_win.cap.get(cv2.CAP_PROP_POS_FRAMES)
+            ret, frame = main_win.cap.read()
+            main_win.cap.set(cv2.CAP_PROP_POS_FRAMES, current_pos)
+            if ret:
+                return frame
+        return None   
 
     def mouseMoveEvent(self, event):
         if self.drawing and self.drawing_enabled:
@@ -137,21 +180,22 @@ class VideoLabel(QLabel):
             current_pos = event.position().toPoint() - video_rect.topLeft()
             video_size = video_rect.size()
             
-            # Converts to normalised coordinates 
+            # Normalize coordinates
             x = max(0, min(current_pos.x() / video_size.width(), 1.0))
             y = max(0, min(current_pos.y() / video_size.height(), 1.0))
             self.end_point = QPointF(x, y)
             self.drawing = False
             
-            # Calculates normalised coordinates 
+            # Calculate normalized coordinates
             x1_norm = min(self.start_point.x(), self.end_point.x())
             y1_norm = min(self.start_point.y(), self.end_point.y())
             x2_norm = max(self.start_point.x(), self.end_point.x())
             y2_norm = max(self.start_point.y(), self.end_point.y())
             
-            # Get original dimensions 
+            # Get original dimensions
             main_window = self.window()
-            
+            original_width, original_height = 1920, 1080  # fallback
+
             if hasattr(main_window, 'video_width') and hasattr(main_window, 'video_height'):
                 original_width = main_window.video_width
                 original_height = main_window.video_height
@@ -162,38 +206,50 @@ class VideoLabel(QLabel):
                 except:
                     pass
             elif hasattr(main_window, 'current_frame') and main_window.current_frame is not None:
-                original_height, original_width = main_window.current_frame.shape[:2] 
-            
-            self.original_width  = original_width   
+                original_height, original_width = main_window.current_frame.shape[:2]
+
+            self.original_width = original_width
             self.original_height = original_height
 
-            annotation = {
-                "x1": int(x1_norm * original_width),
-                "y1": int(y1_norm * original_height),
-                "x2": int(x2_norm * original_width),
-                "y2": int(y2_norm * original_height),
-                "class": self.current_class,
-                "timestamp": main_window.get_video_timestamp(main_window.current_frame_num),
-                "confidence": 1.0,
-                "color": self.drawing_color.name(),
-                "frame_number": main_window.current_frame_num,
-                "coordinates_type": "pixels",
-                "frame_dimensions": f"{original_width}x{original_height}",
-                "video_path": main_window.video_path or "Live",
-                "frame_source": (main_window.video_path or "Live", main_window.current_frame_num)
-            }
-            
-            if main_window.training_wizard is not None:
-                annotation["type"] = "training"
-            else:
-                annotation["type"] = "manual"
+            # Only create annotation if box has significant size
+            min_size = 0.01  # 1% of frame size
+            if (x2_norm - x1_norm) > min_size and (y2_norm - y1_norm) > min_size:
+                annotation = {
+                    "x1": int(x1_norm * original_width),
+                    "y1": int(y1_norm * original_height),
+                    "x2": int(x2_norm * original_width),
+                    "y2": int(y2_norm * original_height),
+                    "class": self.current_class,
+                    "timestamp": main_window.get_video_timestamp(main_window.current_frame_num),
+                    "confidence": 1.0,
+                    "color": self.drawing_color.name(),
+                    "frame_number": main_window.current_frame_num,
+                    "coordinates_type": "pixels",
+                    "frame_dimensions": f"{original_width}x{original_height}",
+                    "video_path": main_window.video_path or "Live",
+                    "frame_source": (main_window.video_path or "Live", main_window.current_frame_num)
+                }
                 
-            if self.window().paused:
+                if main_window.training_wizard is not None:
+                    annotation["type"] = "training"
+                else:
+                    annotation["type"] = "manual"
+                
+                # Store in current frame's annotations
+                if main_window.current_frame_num not in self.frame_annotations:
+                    self.frame_annotations[main_window.current_frame_num] = []
+                self.frame_annotations[main_window.current_frame_num].append(annotation)
+                
+                # Add to active annotations for display
                 self.active_annotations.append(annotation)
                 
-            # Adds to the history
-            if hasattr(main_window, 'add_manual_annotation_to_history'):
-                main_window.add_manual_annotation_to_history(annotation)
+                # Show SAM button after first bbox is drawn
+                if hasattr(main_window, 'sam2_refinement_btn') and main_window.sam2_refinement_btn:
+                    main_window.sam2_refinement_btn.setVisible(True)
+                
+                # Add to history
+                if hasattr(main_window, 'add_manual_annotation_to_history'):
+                    main_window.add_manual_annotation_to_history(annotation)
             
             self.update()
 
@@ -339,3 +395,14 @@ class VideoLabel(QLabel):
             painter.drawRect(rect)
         
         painter.end()
+
+    def get_frame_coordinates(self, pos):
+        """Convert widget coordinates to original frame coordinates"""
+        video_rect = self.get_video_rect()
+        if not video_rect or video_rect.width() == 0 or video_rect.height() == 0:
+            return None
+            
+        rel_pos = pos - video_rect.topLeft()
+        frame_x = int(rel_pos.x() * (self.original_width / video_rect.width()))
+        frame_y = int(rel_pos.y() * (self.original_height / video_rect.height()))
+        return frame_x, frame_y

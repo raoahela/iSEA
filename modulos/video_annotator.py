@@ -30,6 +30,7 @@ from .translations import TEXTS
 from .taxon_grid import TaxonGrid
 from .detection_thread import DetectionThread
 from .training_wizard import TrainingWizard
+from .sam2_thread import SAM2Thread
 
 def resource_path(relative_path):
     try:
@@ -84,7 +85,13 @@ class VideoAnnotator(QMainWindow):
         self.dataset_mode = False              
         self.dataset_frames = []               
         self.dataset_index = 0    
-        self.training_wizard = None            
+        self.training_wizard = None 
+        self.sam2_refinement_mode = False  
+        self.current_bb_for_refinement = None      
+        self.sam2_thread = None
+        self.sam2_masks = {}  
+        self.current_sam2_mask = None
+        self.init_sam2()     
         
         self.taxon_grid = None
         self.taxon_grid = TaxonGrid(self)
@@ -1283,6 +1290,7 @@ class VideoAnnotator(QMainWindow):
     def enable_manual_annotation(self):
         self.paused = True
         is_dark = self.palette().color(QPalette.ColorRole.Window).lightness() < 128 
+        
         if is_dark:
             self._play_action.setIcon(self.recolor_icon(QStyle.StandardPixmap.SP_MediaPlay))
         else: 
@@ -1290,9 +1298,20 @@ class VideoAnnotator(QMainWindow):
         self._play_action.setText(self.texts["play"])
         self.timer.stop()
 
+        # Toggle manual annotation mode
         self.video_label.drawing_enabled = not self.video_label.drawing_enabled
 
         if self.video_label.drawing_enabled:
+            # Create SAM 2 button if it doesn't exist
+            if not hasattr(self, 'sam2_refinement_btn') or self.sam2_refinement_btn is None:
+                self.sam2_refinement_btn = QPushButton(self.texts["refine_with_sam2"])
+                self.sam2_refinement_btn.clicked.connect(self.toggle_sam2_refinement)
+                self.statusBar().addWidget(self.sam2_refinement_btn)
+            
+            # Hide button initially, will show after first bbox is drawn
+            self.sam2_refinement_btn.setVisible(False)
+            
+            # Verify class selection
             if not self.video_label.current_class:
                 first = next(iter(self.taxon_grid._buttons.keys()), None)
                 if first:
@@ -1302,6 +1321,7 @@ class VideoAnnotator(QMainWindow):
                     self.video_label.drawing_enabled = False
                     return
 
+            # Set button to ACTIVE state (blue)
             self.annotate_button.setStyleSheet("""
                 QPushButton {
                     padding: 3px 8px;
@@ -1316,8 +1336,14 @@ class VideoAnnotator(QMainWindow):
             self.set_status_message("manual_annotation_on")
 
         else:
-            is_dark = self.palette().color(QPalette.ColorRole.Window).lightness() < 128
-            self.annotate_button.setStyleSheet(f"""
+            # Hide SAM 2 button when exiting manual mode
+            if hasattr(self, 'sam2_refinement_btn') and self.sam2_refinement_btn:
+                self.sam2_refinement_btn.setVisible(False)
+                self.sam2_refinement_mode = False  # Reset SAM mode
+                self.sam2_refinement_btn.setStyleSheet("")  # Reset style
+            
+            # Set button to INACTIVE state (normal color)
+            style = f"""
                 QPushButton {{
                     padding: 3px 8px;
                     border-radius: 4px;
@@ -1333,7 +1359,8 @@ class VideoAnnotator(QMainWindow):
                 QPushButton:pressed {{
                     background-color: {'#2a82da' if is_dark else '#ccc'};
                 }}
-            """)
+            """
+            self.annotate_button.setStyleSheet(style)
             self.set_status_message("manual_annotation_off")
 
         self.video_label.update()
@@ -2601,7 +2628,7 @@ class VideoAnnotator(QMainWindow):
 
         frame = cv2.imread(image_path)
         if frame is None:
-            self.status_label.setText("Erro ao carregar imagem: " + str(image_path))
+            self.status_label.setText("Error loading image: " + str(image_path))
             return
 
         self.current_frame_num = index
@@ -2658,3 +2685,113 @@ class VideoAnnotator(QMainWindow):
                     print(f"Erro ao copiar {img_path}: {e}")
         
         return background_count
+    
+    def init_sam2(self):
+        """Initialize SAM 2 model and thread"""
+        try:
+            self.sam2_thread = SAM2Thread("sam2.1_b.pt", self)
+            self.sam2_thread.mask_finished.connect(self.on_sam2_mask_finished)
+            self.sam2_thread.error.connect(self.on_sam2_error)
+            self.sam2_thread.start()
+        except Exception as e:
+            self.status_label.setText("SAM 2 initialization failed")
+
+    def on_sam2_mask_finished(self, mask_data, original_frame, frame_num):
+        """Handle SAM 2 mask generation completion"""
+        try:
+            if mask_data and mask_data["segmentation"] is not None:
+                # Store mask data
+                self.current_sam2_mask = mask_data
+                
+                # Add to detections dock
+                detection = {
+                    "type": "sam2",
+                    "class": f"{self.video_label.current_class}_segment",
+                    "confidence": float(mask_data["scores"][0]) if mask_data.get("scores") else 0.95,
+                    "frame_number": frame_num,
+                    "timestamp": self.get_video_timestamp(frame_num),
+                    "video_path": self.video_path or "Live",
+                    "mask": mask_data["segmentation"],
+                    "frame_source": (self.video_path, frame_num),
+                    "frame_dimensions": f"{original_frame.shape[1]}x{original_frame.shape[0]}"
+                }
+                
+                self.detections_dock.add_detection(detection)
+                self.status_label.setText(
+                    self.texts["sam2_mask_created"].format(len(mask_data.get("all_masks", [1])))
+                )
+                
+                # Redraw frame with mask
+                self.redraw_frame_with_mask(mask_data, original_frame)
+                
+        except Exception as e:
+            self.on_sam2_error(str(e))
+
+    def on_sam2_error(self, error_msg):
+        """Handle SAM 2 errors"""
+        self.status_label.setText(self.texts["sam2_error"].format(error_msg))
+
+    def redraw_frame_with_mask(self, mask_data, original_frame):
+        try:
+            mask = mask_data["segmentation"]
+            if mask is None or mask.shape[:2] != original_frame.shape[:2]:
+                return
+                
+            # Cria overlay colorido para a máscara
+            overlay = original_frame.copy()
+            overlay[mask > 0.5] = [0, 255, 0]  # Máscara verde
+            
+            # Mistura original com overlay
+            alpha = 0.4
+            blended = cv2.addWeighted(original_frame, 1-alpha, overlay, alpha, 0)
+            
+            # IMPORTANTE: Mantém a bounding box original visível
+            if hasattr(self, 'current_bb_for_refinement') and self.current_bb_for_refinement:
+                bb = self.current_bb_for_refinement
+                # Desenha bbox em azul para mostrar que está sendo refinada
+                cv2.rectangle(blended, (bb["x1"], bb["y1"]), (bb["x2"], bb["y2"]), 
+                            (255, 0, 0), 2)  # Bbox azul
+            
+            self.display_frame(blended)
+            
+        except Exception as e:
+            print(f"Error drawing mask: {e}")
+
+    def toggle_sam2_refinement(self):
+        
+        # Se está ativando e não há bbox, mostra aviso e retorna
+        if not self.sam2_refinement_mode:
+            if not self.video_label.active_annotations:
+                self.show_warning_message("warning", "sam2_draw_bbox_first")
+                return
+            # Armazena bbox atual para refinamento
+            self.current_bb_for_refinement = self.video_label.active_annotations[-1]
+        
+        # Alterna o estado
+        self.sam2_refinement_mode = not self.sam2_refinement_mode
+        
+        if self.sam2_refinement_mode:
+            # Ativando
+            self.sam2_refinement_btn.setStyleSheet("""
+                QPushButton { background-color: #ff9500; color: white; font-weight: bold; }
+            """)
+            self.set_status_message("sam2_refinement_on")
+            self.sam2_refinement_btn.setText(self.texts["segment_with_sam2"])
+        else:
+            # Desativando
+            self.current_bb_for_refinement = None
+            self.sam2_refinement_btn.setStyleSheet("")
+            self.set_status_message("sam2_refinement_off")
+            self.sam2_refinement_btn.setText(self.texts["refine_with_sam2"])
+
+    def _get_frame_for_sam(self):
+        """Helper to get current frame for SAM processing"""
+        if hasattr(self, 'current_frame') and self.current_frame is not None:
+            return self.current_frame
+        elif hasattr(self, 'cap') and self.cap is not None:
+            current_pos = self.cap.get(cv2.CAP_PROP_POS_FRAMES)
+            ret, frame = self.cap.read()
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, current_pos)
+            if ret:
+                return frame
+        return None

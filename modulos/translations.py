@@ -232,7 +232,16 @@ TEXTS = {
         "dataset_ready": "Dataset pronto",
         "frames_loaded": "{num_frames} frames carregados.",
         "annotation_instruction": "Anota frame-a-frame e depois use Exportar para YOLO ou Treinar Modelo YOLO.",
-        "space": "Espaço"
+        "space": "Espaço",
+        "refine_with_sam2": "Refinar com SAM 2",
+        "sam2_error": "Erro SAM 2: {}",
+        "sam2_mask_created": "Máscara SAM 2 criada com {} pontos",
+        "sam2_mode_off": "Modo SAM 2 DESATIVADO",
+        "sam2_mode_on": "Modo SAM 2 ATIVADO",
+        "sam2_refinement_off": "Refinamento SAM 2 DESATIVADO",
+        "sam2_refinement_on": "Refinamento SAM 2 ATIVADO - Clique dentro da bounding box",
+        "segment_with_sam2": "Segmentar com SAM 2",
+        "sam2_draw_bbox_first": "Desenhe uma bounding box primeiro"
 
     },
     "en": {
@@ -470,6 +479,15 @@ TEXTS = {
         "dataset_ready": "Dataset Ready",
         "frames_loaded": "{num_frames} frames loaded.",
         "annotation_instruction": "Annotate frame-by-frame and then use Export to YOLO or Train YOLO Model.",
-        "space": "Space"
+        "space": "Space",
+        "refine_with_sam2": "Refine with SAM 2",
+        "sam2_error": "SAM 2 Error: {}",
+        "sam2_mask_created": "SAM 2 mask created with {} points",
+        "sam2_mode_off": "SAM 2 Mode DEACTIVATED",
+        "sam2_mode_on": "SAM 2 Mode ACTIVATED",
+        "sam2_refinement_off": "SAM 2 Refinement DEACTIVATED",
+        "sam2_refinement_on": "SAM 2 Refinement ACTIVATED - Click inside bounding box",
+        "segment_with_sam2": "Segment with SAM 2",
+        "sam2_draw_bbox_first": "Draw a bounding box first"
     }
 }
