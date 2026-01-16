@@ -7,3 +7,4 @@ opencv-python
 PyYAML
 PyQt6
 pandas
+scikit-image

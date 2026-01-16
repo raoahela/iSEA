@@ -4,7 +4,7 @@ import numpy as np
 import torch
 
 class SAM2Thread(QThread):
-    mask_finished = pyqtSignal(object, object, int)  # mask_data, original_frame, frame_num
+    mask_finished = pyqtSignal(dict, object, int)  # mask_data, original_frame, frame_num
     error = pyqtSignal(str)
     
     def __init__(self, model_name="sam2.1_b.pt", parent=None):
@@ -37,12 +37,15 @@ class SAM2Thread(QThread):
         self.current_frame = frame
         self.current_frame_num = frame_num
         self.prompts = prompts
+        self.prompt_type = "points"
         self.condition.wakeOne()
         self.mutex.unlock()
 
     def clear_prompts(self):
         """Clear all prompts"""
+        self.mutex.lock()
         self.prompts = []
+        self.mutex.unlock()
 
     def stop(self):
         self.mutex.lock()
@@ -67,30 +70,19 @@ class SAM2Thread(QThread):
             self.current_frame = None
             self.mutex.unlock()
 
-            if self.model is None or not prompts:
+            if self.model is None:
                 continue
 
             try:
-                # Prepare points and labels
-                points = []
-                labels = []
-                for x, y, label in prompts:
-                    points.append([x, y])
-                    labels.append(label)
-                
-                points = np.array(points) if points else None
-                labels = np.array(labels) if labels else None
-
-                # Run SAM 2 inference
                 device = 'cuda' if self.cuda_available else 'cpu'
+        
                 results = self.model.predict(
-                    frame,
-                    points=points,
-                    labels=labels,
-                    device=device,
-                    verbose=False
-                )
-
+                frame,
+                bboxes=prompts,  # SAM aceita bboxes
+                device=device,
+                verbose=False
+            )
+                
                 if results and len(results) > 0:
                     # Extract mask data
                     masks = results[0].masks

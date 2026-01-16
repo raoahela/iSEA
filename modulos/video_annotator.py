@@ -11,6 +11,7 @@ import csv
 import torch
 import numpy as np
 from collections import defaultdict
+from skimage import measure  
 from ultralytics import YOLO
 from pathlib import Path
 import shutil
@@ -26,6 +27,7 @@ from PyQt6.QtWidgets import (QApplication, QLabel, QPushButton, QVBoxLayout,
 from .video_label import VideoLabel
 from .detections_dock import DetectionsDockWidget
 from .train_thread import TrainThread
+from .train_thread import TrainSegmentationThread
 from .translations import TEXTS
 from .taxon_grid import TaxonGrid
 from .detection_thread import DetectionThread
@@ -546,6 +548,14 @@ class VideoAnnotator(QMainWindow):
         train_action = QAction(self.texts["train_yolo"], self)
         train_action.triggered.connect(self.train_yolo_model)
         training_menu.addAction(train_action)
+
+        export_seg_action = QAction(self.texts["export_segmentation"], self)
+        export_seg_action.triggered.connect(self.export_segmentation_dialog)
+        training_menu.addAction(export_seg_action)
+
+        train_seg_action = QAction(self.texts["train_segmentation_model"], self)
+        train_seg_action.triggered.connect(self.train_segmentation_model)
+        training_menu.addAction(train_seg_action)
 
         # language menu
         lang_menu = menubar.addMenu(self.texts["language"])
@@ -1304,7 +1314,7 @@ class VideoAnnotator(QMainWindow):
         if self.video_label.drawing_enabled:
             # Create SAM 2 button if it doesn't exist
             if not hasattr(self, 'sam2_refinement_btn') or self.sam2_refinement_btn is None:
-                self.sam2_refinement_btn = QPushButton(self.texts["refine_with_sam2"])
+                self.sam2_refinement_btn = QPushButton(self.texts["segment_with_sam2"])
                 self.sam2_refinement_btn.clicked.connect(self.toggle_sam2_refinement)
                 self.statusBar().addWidget(self.sam2_refinement_btn)
             
@@ -2624,13 +2634,15 @@ class VideoAnnotator(QMainWindow):
             return
 
         self.dataset_index = index
-        image_path, original_frame_num, dataset_index = self.dataset_frames[index]
+        image_path = self.dataset_frames[index][0]
 
         frame = cv2.imread(image_path)
         if frame is None:
             self.status_label.setText("Error loading image: " + str(image_path))
             return
 
+        self.current_frame = frame.copy()  # Store for SAM processing
+        
         self.current_frame_num = index
         self.display_frame(frame)
         self.update_time_labels()
@@ -2697,31 +2709,52 @@ class VideoAnnotator(QMainWindow):
             self.status_label.setText("SAM 2 initialization failed")
 
     def on_sam2_mask_finished(self, mask_data, original_frame, frame_num):
-        """Handle SAM 2 mask generation completion"""
+        """Store SAM mask as segmentation-ready annotation"""
         try:
             if mask_data and mask_data["segmentation"] is not None:
-                # Store mask data
-                self.current_sam2_mask = mask_data
                 
-                # Add to detections dock
-                detection = {
-                    "type": "sam2",
-                    "class": f"{self.video_label.current_class}_segment",
+                mask = mask_data["segmentation"]
+                
+                # Extract polygon contours from mask
+                contours = measure.find_contours(mask, 0.5)  # 0.5 threshold
+                if not contours:
+                    self.status_label.setText("No valid contours found")
+                    return
+                
+                # Use largest contour (main object)
+                main_contour = max(contours, key=lambda c: len(c))
+                
+                # Normalize coordinates to [0,1] for YOLO format
+                h, w = mask.shape[:2]
+                normalized_coords = [(y/w, x/h) for x, y in main_contour]
+                
+                # Create segmentation annotation (NEW format)
+                seg_annotation = {
+                    "type": "segmentation",  # NEW type
+                    "class": self.video_label.current_class,
                     "confidence": float(mask_data["scores"][0]) if mask_data.get("scores") else 0.95,
                     "frame_number": frame_num,
                     "timestamp": self.get_video_timestamp(frame_num),
                     "video_path": self.video_path or "Live",
-                    "mask": mask_data["segmentation"],
+                    "mask": mask,  # Keep binary mask for visualization
+                    "polygon": normalized_coords,  # ** YOLO segmentation format **
                     "frame_source": (self.video_path, frame_num),
                     "frame_dimensions": f"{original_frame.shape[1]}x{original_frame.shape[0]}"
                 }
                 
-                self.detections_dock.add_detection(detection)
+                # Store in segmentation-specific storage
+                if not hasattr(self, 'segmentation_annotations'):
+                    self.segmentation_annotations = []
+                self.segmentation_annotations.append(seg_annotation)
+                
+                # Also add to detections dock for visualization
+                self.detections_dock.add_detection(seg_annotation)
+                
                 self.status_label.setText(
-                    self.texts["sam2_mask_created"].format(len(mask_data.get("all_masks", [1])))
+                    self.texts["sam2_segmentation_created"].format(len(normalized_coords))
                 )
                 
-                # Redraw frame with mask
+                # Draw mask on frame
                 self.redraw_frame_with_mask(mask_data, original_frame)
                 
         except Exception as e:
@@ -2758,40 +2791,246 @@ class VideoAnnotator(QMainWindow):
             print(f"Error drawing mask: {e}")
 
     def toggle_sam2_refinement(self):
-        
-        # Se está ativando e não há bbox, mostra aviso e retorna
         if not self.sam2_refinement_mode:
             if not self.video_label.active_annotations:
                 self.show_warning_message("warning", "sam2_draw_bbox_first")
                 return
-            # Armazena bbox atual para refinamento
+            
+            # Store current bbox for refinement
             self.current_bb_for_refinement = self.video_label.active_annotations[-1]
+            
+            # **CRITICAL: Get frame for SAM - works in both modes **
+            sam_frame = self._get_frame_for_sam()
+            if sam_frame is None:
+                self.status_label.setText("No frame available for SAM processing")
+                return
         
-        # Alterna o estado
+        # Toggle state
         self.sam2_refinement_mode = not self.sam2_refinement_mode
         
         if self.sam2_refinement_mode:
-            # Ativando
-            self.sam2_refinement_btn.setStyleSheet("""
-                QPushButton { background-color: #ff9500; color: white; font-weight: bold; }
-            """)
+            # **Activate SAM **
+            self.sam2_refinement_btn.setStyleSheet("background-color: #ff9500; color: white; font-weight: bold;")
             self.set_status_message("sam2_refinement_on")
-            self.sam2_refinement_btn.setText(self.texts["segment_with_sam2"])
+            
+            # ** Create points from bbox for SAM **
+            bb = self.current_bb_for_refinement
+            sam_box = np.array([[bb["x1"], bb["y1"], bb["x2"], bb["y2"]]], dtype=np.float32)
+            
+            # ** Send to SAM thread **
+            sam_frame = self._get_frame_for_sam()
+            if sam_frame is not None:
+                self.sam2_thread.set_frame_and_prompts(sam_frame, self.current_frame_num, sam_box)
         else:
-            # Desativando
+            # Deactivate SAM
             self.current_bb_for_refinement = None
             self.sam2_refinement_btn.setStyleSheet("")
             self.set_status_message("sam2_refinement_off")
-            self.sam2_refinement_btn.setText(self.texts["refine_with_sam2"])
+
 
     def _get_frame_for_sam(self):
-        """Helper to get current frame for SAM processing"""
+        # Priority 1: Use stored current_frame
         if hasattr(self, 'current_frame') and self.current_frame is not None:
-            return self.current_frame
-        elif hasattr(self, 'cap') and self.cap is not None:
+            return self.current_frame.copy()
+        
+        # Priority 2: Dataset mode fallback
+        if getattr(self, 'dataset_mode', False) and hasattr(self, 'dataset_frames') and self.dataset_frames:
+            try:
+                image_path, _, _ = self.dataset_frames[self.current_frame_num]
+                
+                #  Check if file exists
+                if not os.path.exists(image_path):
+                    return None
+                
+                frame = cv2.imread(image_path)
+                if frame is not None:
+                    self.current_frame = frame  # Cache for next time
+                    return frame
+                
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+        
+        # Priority 3: Video mode fallback
+        elif hasattr(self, 'cap') and self.cap is not None and self.cap.isOpened():
             current_pos = self.cap.get(cv2.CAP_PROP_POS_FRAMES)
             ret, frame = self.cap.read()
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, current_pos)
             if ret:
                 return frame
+
+
         return None
+
+    
+    def export_yolo_segmentation_annotations(self, output_dir):
+        """Export SAM masks in YOLO segmentation format"""
+        if not hasattr(self, 'segmentation_annotations') or not self.segmentation_annotations:
+            QMessageBox.warning(self, self.texts["warning"], "No segmentation annotations to export")
+            return
+        
+        try:
+            images_dir = Path(output_dir) / "images"
+            labels_dir = Path(output_dir) / "labels"
+            images_dir.mkdir(exist_ok=True)
+            labels_dir.mkdir(exist_ok=True)
+            
+            # Get unique classes
+            classes = sorted(list(set(
+                ann["class"] for ann in self.segmentation_annotations
+            )))
+            class_to_id = {name: idx for idx, name in enumerate(classes)}
+            
+            # Group by frame
+            frames_dict = defaultdict(list)
+            for ann in self.segmentation_annotations:
+                frame_num = ann.get("frame_number", 0)
+                frames_dict[frame_num].append(ann)
+            
+            progress = QProgressDialog("Exporting segmentation masks...", "Cancel", 0, len(frames_dict), self)
+            progress.show()
+            
+            for i, (frame_num, annotations) in enumerate(frames_dict.items()):
+                if progress.wasCanceled():
+                    break
+                
+                # Extract frame
+                frame = self._extract_frame(frame_num)
+                if frame is None:
+                    continue
+                
+                # Save image
+                img_name = f"frame_{frame_num:06d}.jpg"
+                img_path = images_dir / img_name
+                cv2.imwrite(str(img_path), frame)
+                
+                # Save label (segmentation format)
+                label_name = f"frame_{frame_num:06d}.txt"
+                label_path = labels_dir / label_name
+                
+                with open(label_path, 'w') as f:
+                    for ann in annotations:
+                        class_id = class_to_id[ann["class"]]
+                        coords = ann["polygon"]
+                        
+                        # YOLO format: class_id x1 y1 x2 y2 x3 y3 ...
+                        line = f"{class_id} " + " ".join([f"{x:.6f} {y:.6f}" for x, y in coords])
+                        f.write(line + "\n")
+                
+                progress.setValue(i)
+            
+            progress.close()
+            
+            # Create dataset.yaml
+            yaml_path = Path(output_dir) / "dataset.yaml"
+            with open(yaml_path, 'w') as f:
+                f.write(f"path: {output_dir}\n")
+                f.write("train: images\n")
+                f.write("val: images\n")  # Adjust for your split
+                f.write("names:\n")
+                for idx, name in enumerate(classes):
+                    f.write(f"  {idx}: {name}\n")
+            
+            QMessageBox.information(
+                self, 
+                "Export Complete", 
+                f"Segmentation dataset exported to:\n{output_dir}\n\n"
+                f"Classes: {len(classes)}\n"
+                f"Annotations: {len(self.segmentation_annotations)}"
+            )
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Export failed: {str(e)}")
+            print(f"Export error: {traceback.format_exc()}")
+
+    def _extract_frame(self, frame_num):
+        """Helper to extract frame by number"""
+        if self.cap is None:
+            return None
+        
+        current_pos = self.cap.get(cv2.CAP_PROP_POS_FRAMES)
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
+        ret, frame = self.cap.read()
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, current_pos)
+        
+        return frame if ret else None
+    
+    def export_segmentation_dialog(self):
+        output_dir = QFileDialog.getExistingDirectory(
+            self, "Select output folder for segmentation dataset"
+        )
+        if output_dir:
+            self.export_yolo_segmentation_annotations(output_dir)
+
+    def train_segmentation_model(self):
+        """Train YOLO segmentation model"""
+        if not hasattr(self, 'segmentation_annotations') or not self.segmentation_annotations:
+            QMessageBox.warning(self, "Warning", "No segmentation annotations available")
+            return
+        
+        # Ask for dataset directory
+        dataset_dir = QFileDialog.getExistingDirectory(
+            self, "Select segmentation dataset folder"
+        )
+        if not dataset_dir:
+            return
+        
+        # Ask for model name
+        name, ok = QInputDialog.getText(self, "Model Name", "Enter model name:")
+        if not ok or not name:
+            return
+        
+        self.export_yolo_segmentation_annotations(dataset_dir)
+
+        # Configure training (similar to detection but with -seg model)
+        train_config = {
+            "data": os.path.join(dataset_dir, "dataset.yaml"),
+            "epochs": 50,  # Segmentation needs fewer epochs typically
+            "imgsz": 640,
+            "batch": 8,
+            "task": "segment",  # IMPORTANT!
+            "name": f"seg_model_{name}",
+            "device": "0" if torch.cuda.is_available() else "cpu",
+            "exist_ok": True
+        }
+        
+        # Progress dialog
+        progress = QProgressDialog("Training segmentation model...", "Cancel", 0, train_config["epochs"], self)
+        progress.show()
+        
+        self.train_seg_thread = TrainSegmentationThread(train_config)
+        self.train_seg_thread.epoch_progress.connect(progress.setValue)
+        self.train_seg_thread.finished.connect(lambda: self.on_seg_training_finished(progress))
+        self.train_seg_thread.start()
+
+    def on_seg_training_finished(self, progress):
+        progress.close()
+        if self.train_seg_thread.success:
+            model_path = self.train_seg_thread.model_path
+            QMessageBox.information(
+                self, 
+                "Training Complete", 
+                f"Segmentation model saved to:\n{model_path}"
+            )
+        else:
+            QMessageBox.critical(self, "Training Failed", self.train_seg_thread.error)
+
+    def closeEvent(self, event):
+        """Safely stop all threads before closing"""
+        # Stop SAM2 thread
+        if hasattr(self, 'sam2_thread') and self.sam2_thread is not None:
+            self.sam2_thread.stop()
+            self.sam2_thread.wait(2000)  # Wait max 2 seconds
+        
+        # Stop detection thread
+        if hasattr(self, 'detection_thread') and self.detection_thread is not None:
+            self.detection_thread.stop()
+            self.detection_thread.wait(2000)
+        
+        # Stop training thread if running
+        if hasattr(self, 'train_thread') and self.train_thread is not None:
+            if self.train_thread.isRunning():
+                self.train_thread.terminate()  # Last resort
+                self.train_thread.wait(2000)
+        
+        event.accept()
