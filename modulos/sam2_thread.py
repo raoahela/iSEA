@@ -26,7 +26,6 @@ class SAM2Thread(QThread):
             device = 'cuda' if self.cuda_available else 'cpu'
             self.model = SAM(self.model_name)
             self.model.to(device)
-            print(f"SAM 2 model loaded on {device}")
         except Exception as e:
             print(f"Failed to load SAM 2: {e}")
             self.error.emit(str(e))

@@ -8,6 +8,7 @@ import pandas as pd
 import traceback
 from datetime import datetime, timedelta
 import csv
+import time
 import torch
 import numpy as np
 from collections import defaultdict
@@ -18,7 +19,7 @@ import shutil
 from PyQt6 import QtCore
 from PyQt6.QtGui import (QPixmap, QImage, QIcon, QPainter, QPen, QAction, 
                          QKeySequence, QColor, QPalette, QDesktopServices)
-from PyQt6.QtCore import Qt, QTimer, QRect, QSize, QUrl
+from PyQt6.QtCore import Qt, QTimer, QRect, QSize, QUrl, QMutex, QMutexLocker
 from PyQt6.QtWidgets import (QApplication, QLabel, QPushButton, QVBoxLayout,  
                             QHBoxLayout, QWidget, QFileDialog, QMainWindow, QToolBar, QStyle, QMessageBox, 
                             QInputDialog, QSlider, QDockWidget, QDialog, QDialogButtonBox, 
@@ -77,7 +78,7 @@ class VideoAnnotator(QMainWindow):
         self.init_ui()
         self.create_menu()
         self.apply_light_style()  
-        self.detection_every_n_frames = 2
+        self.detection_every_n_frames = 0
         self.detection_thread = DetectionThread(None)
         self.detection_thread.detection_finished.connect(self.on_detection_finished)
         self.detection_thread.start()
@@ -94,6 +95,8 @@ class VideoAnnotator(QMainWindow):
         self.sam2_masks = {}  
         self.current_sam2_mask = None
         self.init_sam2()     
+        self.pending_detection_result = None
+        self.detection_mutex = QMutex()
         
         self.taxon_grid = None
         self.taxon_grid = TaxonGrid(self)
@@ -999,8 +1002,7 @@ class VideoAnnotator(QMainWindow):
         h = hashlib.blake2b(gray.tobytes(), digest_size=8).hexdigest()
         return h, small
     
-    def similar_frames(self, frame1: np.ndarray, frame2: np.ndarray, threshold=2):
-        # Compares two frames, if is too similar the model will skip
+    def similar_frames(self, frame1: np.ndarray, frame2: np.ndarray, threshold=4):
         if frame1 is None or frame2 is None:
             return False
         diff = cv2.absdiff(frame1, frame2)
@@ -1008,14 +1010,14 @@ class VideoAnnotator(QMainWindow):
         return mean_diff < threshold
     
     def update_frame(self):
+        """Main frame update loop - handles video playback and detection"""
         if self.paused or self.cap is None or not self.cap.isOpened():
             return
-        
+
         try:
             ret, frame = self.cap.read()
             if not ret:
                 if self.live_mode:
-                    # tries to reconnect camera
                     self.start_camera()
                     return
                 else:
@@ -1025,17 +1027,68 @@ class VideoAnnotator(QMainWindow):
                     self._play_action.setIcon(self.play_icon)
                     self._play_action.setText(self.texts["play"])
                     return
-                    
-            # Updates the current frame number (only for video file)
+               
+            # Updates the current frame number (only for video file)   
             if not self.live_mode:
                 self.current_frame_num = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES))
                 self.update_progress_slider()
+            
+            # ========== MODE 1x: SYNCHRONOUS DETECTION ==========
+            if self.continuous_detection and self.model and not self.velocity:
+                frame_copy = np.ascontiguousarray(frame.copy())
+                
+                with torch.no_grad():
+                    results = self.model.track(
+                        frame_copy,
+                        persist=True,
+                        verbose=False,
+                        device='cuda' if torch.cuda.is_available() else 'cpu',
+                        tracker="botsort.yaml",
+                        conf=0.55,
+                        iou=0.65,
+                    )
+                    
+                    if results and len(results) > 0 and results[0].boxes:
+                        # Draw boxes directly on frame
+                        frame = results[0].plot(img=frame)
+                        
+                        # Process detections for history
+                        for box in results[0].boxes:
+                            x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                            cls_id = int(box.cls[0])
+                            conf = float(box.conf[0])
+                            label = self.model.names[cls_id]
+                            track_id = int(box.id) if box.id is not None else None
+                                
+                            detection = {
+                                "x1": x1, "y1": y1, "x2": x2, "y2": y2,
+                                "label": label, 
+                                "confidence": conf,
+                                "type": "auto", 
+                                "class": label,
+                                "timestamp": self.get_video_timestamp(self.current_frame_num),
+                                "track_id": track_id,
+                                "frame_number": self.current_frame_num,
+                                "video_path": self.video_path,
+                                "frame_dimensions": f"{frame_copy.shape[1]}x{frame_copy.shape[0]}",
+                                "frame_source": (self.video_path or "Live", self.current_frame_num) 
+                            }
+                            self.annotations.append(detection)
+                            self.detections_dock.add_detection(detection)
+
+            # ========== MODE 2x: ASYNCHRONOUS DETECTION ==========
+            # Check for pending detection results from thread
+            # MOVED TO AFTER the 1x block to ensure it's checked every frame
+            should_detect = True
+            if self.continuous_detection and self.velocity:
+                self.frame_skip_counter += 1
+                should_detect = (self.frame_skip_counter % self.detection_every_n_frames == 0)
 
             # if recording, saves the frame 
             if self.recording and self.video_writer is not None:
                 self.video_writer.write(frame)
 
-            # Frame skipping logic for continuous detection
+            # Frame skipping logic for continuous detection in 2x mode
             should_detect = True
             if self.continuous_detection and self.velocity:
                 self.frame_skip_counter += 1
@@ -1072,25 +1125,26 @@ class VideoAnnotator(QMainWindow):
                             (text_x, text_y), 
                             font, font_scale, text_color, font_thickness)
             
-            if should_detect and self.continuous_detection and self.model:
-                if frame is None:
-                    return
-
+            # Send frame to detection thread (only in 2x mode with frame skipping)
+            if should_detect and self.continuous_detection and self.model and self.velocity:
                 frame_copy = np.ascontiguousarray(frame.copy())
                 if frame_copy is None or frame_copy.size == 0:
                     return
 
+                # Use similar_frames to avoid processing identical frames
                 frame_hash, frame_small = self.frame_to_small_and_hash(frame_copy)
-                if self.last_frame_hash is None or not self.similar_frames(self.last_frame_small, frame_small, threshold=2):
+                if self.last_frame_hash is None or not self.similar_frames(self.last_frame_small, frame_small, threshold=4):
                     self.last_frame_hash = frame_hash
                     self.last_frame_small = frame_small
                     frame_num = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES))
                     self.detection_thread.set_frame(frame_copy, frame_num)
-                
-            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+
+
+            # Convert BGR to RGB for Qt display
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
             #Resizing while maintaining aspect ratio
-            h, w = frame.shape[:2]
+            h, w = frame_rgb.shape[:2]
             target_w = self.video_label.width()
             target_h = self.video_label.height()
             
@@ -1101,12 +1155,12 @@ class VideoAnnotator(QMainWindow):
                 new_h = target_h
                 new_w = int(w * target_h / h)
                 
-            frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            frame_resized = cv2.resize(frame_rgb, (new_w, new_h), interpolation=cv2.INTER_AREA)
             
             #frame display
-            h, w = frame.shape[:2]
+            h, w = frame_resized.shape[:2]
             bytes_per_line = 3 * w
-            q_img = QImage(frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+            q_img = QImage(frame_resized.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
             pixmap = QPixmap.fromImage(q_img)
             self.video_label.setPixmap(pixmap)
             self.update_time_labels()
@@ -1211,39 +1265,53 @@ class VideoAnnotator(QMainWindow):
             return False
     
     def on_detection_finished(self, results, used_frame, frame_num):
+        """Callback from detection thread"""
         if results is None or not results.boxes:
             return
 
-        plotted = results.plot()          
-        self.display_frame(plotted)
+        try:
+            # Extract detection data once (avoid duplication)
+            for box in results.boxes:
+                x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                cls_id = int(box.cls[0])
+                conf = float(box.conf[0])
+                label = self.model.names[cls_id]
+                track_id = int(box.id) if box.id is not None else None
+                
+                detection = {
+                    "x1": x1, "y1": y1, "x2": x2, "y2": y2,
+                    "label": label,
+                    "confidence": conf,
+                    "type": "auto",
+                    "class": label,
+                    "timestamp": self.get_video_timestamp(frame_num),
+                    "track_id": track_id,
+                    "frame_number": frame_num,
+                    "video_path": self.video_path,
+                    "frame_dimensions": f"{used_frame.shape[1]}x{used_frame.shape[0]}",
+                    "frame_source": (self.video_path, frame_num)
+                }
+                self.annotations.append(detection)
+                self.detections_dock.add_detection(detection)
 
-        rgb = cv2.cvtColor(used_frame, cv2.COLOR_BGR2RGB)
-        h, w, ch = rgb.shape
+            # Handle display based on mode
+            if self.velocity:
+                # 2x mode: Display immediately (async)
+                plotted = results.plot()
+                self.display_frame(plotted)
+            else:
+                # 1x mode: Store for sync application in update_frame
+                with QMutexLocker(self.detection_mutex):
+                    self.pending_detection_result = {
+                        'results': results,
+                        'frame_num': frame_num
+                    }
 
-        for box in results.boxes:
-            x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
-            cls_id   = int(box.cls[0])
-            conf     = float(box.conf[0])
-            label    = self.model.names[cls_id]
-            track_id = int(box.id) if box.id is not None else None
-
-            detection = {
-                "x1": x1, "y1": y1, "x2": x2, "y2": y2,
-                "label": label,
-                "confidence": conf,
-                "type": "auto",
-                "class": label,
-                "timestamp": self.get_video_timestamp(frame_num),
-                "track_id": track_id,
-                "frame_number": frame_num,
-                "video_path": self.video_path,               
-                "frame_dimensions": f"{w}x{h}", 
-                "frame_source": (self.video_path, frame_num) 
-            }
-            self.annotations.append(detection)
-            self.detections_dock.add_detection(detection)
-
-        self.set_status_message("detection_completed", frame_num)
+            self.set_status_message("detection_completed", frame_num)
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
     
     def toggle_detection(self):
             if not self.cap or not self.cap.isOpened():
@@ -1645,6 +1713,11 @@ class VideoAnnotator(QMainWindow):
             new_interval = int(1000 / fps)
             self.timer.start(new_interval)
             self.velocity2_button.setStyleSheet("background-color: None")
+            self.detection_every_n_frames = 0
+            self.frame_skip_counter = 0
+
+            self.last_frame_hash = None
+            self.last_frame_small = None
 
             self.set_status_message("speed_format", "1.0", fps)
 
