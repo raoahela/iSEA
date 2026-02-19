@@ -50,6 +50,7 @@ class VideoAnnotator(QMainWindow):
         self.texts = TEXTS[self.language] 
         
         self.setWindowTitle("iSEA")
+        self.setWindowIcon(QIcon(resource_path("icons/iSEA_icon.png")))
         self.resize(1200, 700)
 
         self.model = None
