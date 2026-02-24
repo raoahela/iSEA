@@ -1733,6 +1733,7 @@ class VideoAnnotator(QMainWindow):
             self.velocity2_button.setStyleSheet("background-color: #5c9eff;")
             self.set_status_message("speed_detection_format", "2.0", self.detection_every_n_frames)
 
+    
     def export_yolo_annotations(self, output_dir):
         if not hasattr(self, 'all_detections'):
             QMessageBox.warning(self, self.texts["warning"], self.texts["no_annotations_to_export"])
@@ -1772,20 +1773,26 @@ class VideoAnnotator(QMainWindow):
             
             all_frames = sorted(frames_dict.keys())
             
-            # Convert frame numbers to dataset indexes
-            if self.dataset_mode and hasattr(self, 'dataset_frames') and self.dataset_frames:
-                # Dataset mode: use direct indexes
-                dataset_indices = list(range(len(self.dataset_frames)))
-                split_idx = int(0.8 * len(dataset_indices))
-                train_indices = set(dataset_indices[:split_idx])
-                val_indices = set(dataset_indices[split_idx:])
+            is_dataset_mode = self.dataset_mode and hasattr(self, 'dataset_frames') and self.dataset_frames
+            
+            if is_dataset_mode:
+                # Random split for dataset mode
+                import random
+                all_indices = list(range(len(self.dataset_frames)))
+                random.shuffle(all_indices)
+                split_idx = int(0.8 * len(all_indices))
+                train_indices = set(all_indices[:split_idx])
+                val_indices = set(all_indices[split_idx:])
             else:
-                # Video mode: use frame numbers
-                split_idx = int(0.8 * len(all_frames))
-                train_frames = set(all_frames[:split_idx])
-                val_frames = set(all_frames[split_idx:])
-                train_indices = train_frames
-                val_indices = val_frames
+                # Random split for video mode
+                import random
+                shuffled_frames = all_frames.copy()
+                random.shuffle(shuffled_frames)
+                split_idx = int(0.8 * len(shuffled_frames))
+                train_frames_set = set(shuffled_frames[:split_idx])
+                val_frames_set = set(shuffled_frames[split_idx:])
+                train_indices = train_frames_set
+                val_indices = val_frames_set
             
             progress = QProgressDialog(self.texts["exporting_frames"], self.texts["cancel"], 0, len(all_frames), self)
             progress.setWindowTitle(self.texts["exporting_dataset"])
@@ -1795,7 +1802,7 @@ class VideoAnnotator(QMainWindow):
             processed_frames = 0
 
             video_name_prefix = ""
-            if not self.dataset_mode and self.video_path and self.video_path != "Live":
+            if not is_dataset_mode and self.video_path and self.video_path != "Live":
                 video_name = Path(self.video_path).stem
                 video_name_prefix = "".join(c for c in video_name if c.isalnum() or c in ('_', '-'))
             
@@ -1809,12 +1816,14 @@ class VideoAnnotator(QMainWindow):
                 frame = None
                 img_name = None
                 
-                if self.dataset_mode and hasattr(self, 'dataset_frames') and self.dataset_frames:
-                    for dataset_path, original_frame_num, dataset_index in self.dataset_frames:
-                        if dataset_index == frame_num:
-                            img_name = Path(dataset_path).name
-                            frame = cv2.imread(dataset_path)
-                            break
+                if is_dataset_mode:
+                    if 0 <= frame_num < len(self.dataset_frames):
+                        dataset_path, original_frame_num, dataset_index = self.dataset_frames[frame_num]
+                        img_name = Path(dataset_path).name
+                        frame = cv2.imread(dataset_path)
+                        is_train = frame_num in train_indices
+                    else:
+                        continue
                 elif self.cap and self.cap.isOpened():
                     current_pos = self.cap.get(cv2.CAP_PROP_POS_FRAMES)
                     self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
@@ -1827,22 +1836,14 @@ class VideoAnnotator(QMainWindow):
                             img_name = f"{video_name_prefix}_{frame_num:06d}.jpg"
                         else:
                             img_name = f"frame_{frame_num:06d}.jpg"
+                        is_train = frame_num in train_indices
+                    else:
+                        continue
+                else:
+                    continue
                 
                 if frame is None:
                     continue
-                
-                #  Determine subdir based on index
-                if self.dataset_mode and hasattr(self, 'dataset_frames'):
-                    # find corresponding index
-                    frame_index = -1
-                    for idx, (_, _, dataset_idx) in enumerate(self.dataset_frames):
-                        if dataset_idx == frame_num:
-                            frame_index = idx
-                            break
-                    
-                    is_train = frame_index in train_indices
-                else:
-                    is_train = frame_num in train_frames
                 
                 img_subdir = "train" if is_train else "val"
                 
@@ -1879,15 +1880,16 @@ class VideoAnnotator(QMainWindow):
                             f.write(f"{class_id} {x_center:.6f} {y_center:.6f} {width:.6f} {height:.6f}\n")
 
                         except Exception as e:
-                            print(f"❌ Erro na anotação {ann}: {e}")
                             continue
 
             progress.close()
 
-            if self.dataset_mode:
-                bg_count = self.add_background_images_to_dataset(images_dir, train_indices, val_indices)
-            else:
-                bg_count = 0
+            # Background images only in dataset mode
+            bg_count = 0
+            if is_dataset_mode:
+                # Get indices of frames that have annotations
+                annotated_indices = set(frames_dict.keys())
+                bg_count = self.add_background_images_to_dataset(images_dir, train_indices, val_indices, annotated_indices)
             
             # create dataset.yaml 
             yaml_path = os.path.join(output_dir, "dataset.yaml")
@@ -1920,6 +1922,55 @@ class VideoAnnotator(QMainWindow):
                 traceback.format_exc()
             )
 
+    def add_background_images_to_dataset(self, images_dir, train_indices: set, val_indices: set, annotated_indices: set) -> int:
+            if not self.dataset_mode or not hasattr(self, 'dataset_frames') or not self.dataset_frames:
+                return 0
+            
+            background_count = 0
+            images_dir = Path(images_dir)
+            
+            # All dataset indices
+            all_indices = set(range(len(self.dataset_frames)))
+            
+            # Background indices are those NOT in annotated_indices
+            background_indices = all_indices - annotated_indices
+            
+            if not background_indices:
+                print("No background images found in dataset")
+                return 0
+            
+            # Split background images 80/20 between train and val
+            bg_list = sorted(list(background_indices))
+            split_point = int(len(bg_list) * 0.8)
+            train_bg = set(bg_list[:split_point])
+            val_bg = set(bg_list[split_point:])
+            
+            # Copy background images to train folder
+            for idx in train_bg:
+                if 0 <= idx < len(self.dataset_frames):
+                    img_path = Path(self.dataset_frames[idx][0])
+                    dst = images_dir / "train" / img_path.name
+                    if not dst.exists():
+                        try:
+                            shutil.copy2(img_path, dst)
+                            background_count += 1
+                        except Exception as e:
+                            print(f"Error copying {img_path}: {e}")
+            
+            # Copy background images to val folder
+            for idx in val_bg:
+                if 0 <= idx < len(self.dataset_frames):
+                    img_path = Path(self.dataset_frames[idx][0])
+                    dst = images_dir / "val" / img_path.name
+                    if not dst.exists():
+                        try:
+                            shutil.copy2(img_path, dst)
+                            background_count += 1
+                        except Exception as e:
+                            print(f"Error copying {img_path}: {e}")
+            
+            return background_count
+    
     def export_yolo_annotations_dialog(self):
         """Opens dialog to select output directory""" 
         output_dir = QFileDialog.getExistingDirectory(
@@ -2018,12 +2069,8 @@ class VideoAnnotator(QMainWindow):
                 background_indices = all_indices - annotated_indices
                 
                 if background_indices:
-                    bg_list = list(background_indices)
-                    bg_split = int(len(bg_list) * 0.8)
-                    train_bg = set(bg_list[:bg_split])
-                    val_bg = set(bg_list[bg_split:])
-                    
-                    bg_count = self.add_background_images_to_dataset(images_dir, train_bg, val_bg)
+                    annotated_indices = set(ann.get("frame_number", 0) for ann in manual_annotations)
+                    bg_count = self.add_background_images_to_dataset(images_dir, train_indices, val_indices, annotated_indices)
                 else:
                     bg_count = 0
             else:
@@ -2713,55 +2760,6 @@ class VideoAnnotator(QMainWindow):
         self.update_time_labels()
         self.video_name_label.setText(f"[Dataset] {Path(image_path).name}")
 
-    def add_background_images_to_dataset(self, images_dir, train_indices: set, val_indices: set) -> int:
-      
-        #  Complete validation
-        if not self.dataset_mode or not hasattr(self, 'dataset_frames') or not self.dataset_frames:
-            return 0
-        
-        background_count = 0
-        images_dir = Path(images_dir)
-        
-        # Set of all image paths in the dataset
-        all_dataset_paths = {Path(path) for path, _, _ in self.dataset_frames}
-        
-        # Access only VALID INDEXES in the dataset
-        annotated_paths = set()
-        for idx in (train_indices | val_indices):
-            if 0 <= idx < len(self.dataset_frames):  
-                annotated_paths.add(Path(self.dataset_frames[idx][0]))
-        
-        # background
-        unannotated = list(all_dataset_paths - annotated_paths)
-        
-        if not unannotated:
-            return 0
-        
-        # Divides 80/20
-        split_point = int(len(unannotated) * 0.8)
-        train_bg = unannotated[:split_point]
-        val_bg = unannotated[split_point:]
-        
-        # Copy with try/except for safety
-        for img_path in train_bg:
-            dst = images_dir / "train" / img_path.name
-            if not dst.exists():
-                try:
-                    shutil.copy2(img_path, dst)
-                    background_count += 1
-                except Exception as e:
-                    print(f"Erro ao copiar {img_path}: {e}")
-        
-        for img_path in val_bg:
-            dst = images_dir / "val" / img_path.name
-            if not dst.exists():
-                try:
-                    shutil.copy2(img_path, dst)
-                    background_count += 1
-                except Exception as e:
-                    print(f"Erro ao copiar {img_path}: {e}")
-        
-        return background_count
     
     def init_sam2(self):
         """Initialize SAM 2 model and thread"""
