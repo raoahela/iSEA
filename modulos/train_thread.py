@@ -17,7 +17,7 @@ class TrainThread(QThread):
 
     def run(self):
         try:
-            model = YOLO("yolov8n.pt")
+            model = YOLO("yolo26n.pt")
 
             def on_epoch_end(trainer):
                 self.epoch_progress.emit(trainer.epoch + 1)
@@ -55,7 +55,7 @@ class TrainSegmentationThread(QThread):
     def run(self):
         try:
             # Load segmentation-specific model
-            model = YOLO("yolov8n-seg.pt")
+            model = YOLO("yolo26n-seg.pt")
 
             def on_epoch_end(trainer):
                 self.epoch_progress.emit(trainer.epoch + 1)

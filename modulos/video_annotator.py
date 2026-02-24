@@ -97,7 +97,8 @@ class VideoAnnotator(QMainWindow):
         self.current_sam2_mask = None
         self.init_sam2()     
         self.pending_detection_result = None
-        self.detection_mutex = QMutex()
+        self.detection_mutex = QMutex() 
+        self.detection_frame_buffer = []
         
         self.taxon_grid = None
         self.taxon_grid = TaxonGrid(self)
@@ -865,7 +866,7 @@ class VideoAnnotator(QMainWindow):
         self.taxon_grid.set_dark_mode(is_dark)
 
     def load_custom_model(self):
-        path, _ = QFileDialog.getOpenFileName(self, self.texts["select_model"], "",  "Arquivos de Modelo (*.pt)")
+        path, _ = QFileDialog.getOpenFileName(self, self.texts["select_model"], "",  "Model files (*.pt *.onnx *.engine);;PyTorch (*.pt);;ONNX (*.onnx);;TensorRT (*.engine)")
         if path:
             self.load_model(path)
 
@@ -873,8 +874,8 @@ class VideoAnnotator(QMainWindow):
         try:
             if model_path is None:
                 # loads deafault model
-                self.model = YOLO(resource_path("yolov8n.pt"))
-                self.model_path = "yolov8n.pt"
+                self.model = YOLO(resource_path("yolo26n.pt"))
+                self.model_path = "yolo26n.pt"
             else:
                 if os.path.exists(model_path):
                     self.model = YOLO(resource_path(model_path))
@@ -1706,43 +1707,31 @@ class VideoAnnotator(QMainWindow):
         if self.cap is None:
             return
         if self.velocity:
+            # Deactivate 2x speed mode
             self.velocity = False
-            # stops the current timer if is running
-            if self.timer.isActive():
-                self.timer.stop()
-            fps = self.cap.get(cv2.CAP_PROP_FPS)
-            new_interval = int(1000 / fps)
-            self.timer.start(new_interval)
-            self.velocity2_button.setStyleSheet("background-color: None")
             self.detection_every_n_frames = 0
             self.frame_skip_counter = 0
-
-            self.last_frame_hash = None
-            self.last_frame_small = None
-
+            self.timer.stop()
+            
+            fps = self.cap.get(cv2.CAP_PROP_FPS)
+            self.timer.start(int(1000 / fps))
+            self.velocity2_button.setStyleSheet("background-color: None")
             self.set_status_message("speed_format", "1.0", fps)
-
         else:
-            # activates 2x velocity 
+            # Activate with smart tracking
             self.velocity = True
             self.frame_skip_counter = 0
-            self.velocity2_button.setStyleSheet("background-color: #5c9eff;")
+            
+            # INCREASE detection buffer to maintain tracking
+            self.detection_every_n_frames = 3  # Detect every 3 frames (not 2)
+            self.track_buffer_size = 5  # Keep history of 5 frames
+            
             fps = self.cap.get(cv2.CAP_PROP_FPS)
-            
-            # dif configs for continuous detection/non-continuous detection mode  
-            if self.continuous_detection:
-                new_interval = int(1000 / (fps * 2))  
-                self.detection_every_n_frames = 2  
-                
-                self.set_status_message("speed_detection_format", "2.0", self.detection_every_n_frames)
-            else:
-                # Normal mode without continuous detection - simply doubles the speed
-                new_interval = int(1000 / (fps * 2))
-                self.set_status_message("speed_format", "2.0", fps*2)
-            
-            if self.timer.isActive():
-                self.timer.stop()
+            new_interval = int(1000 / (fps * 2))
             self.timer.start(new_interval)
+            
+            self.velocity2_button.setStyleSheet("background-color: #5c9eff;")
+            self.set_status_message("speed_detection_format", "2.0", self.detection_every_n_frames)
 
     def export_yolo_annotations(self, output_dir):
         if not hasattr(self, 'all_detections'):
@@ -2534,16 +2523,18 @@ class VideoAnnotator(QMainWindow):
         self.all_detections.append(annotation)
         self.detections_dock.add_detection(annotation)
 
-    def robust_read_csv(self, path):
-        for enc in ('utf-8', 'latin1', 'iso-8859-1', 'cp1252'):
-            for sep in (',', ';', '\t'):
-                try:
-                    with open(path, newline='', encoding=enc) as f:
-                        sep = csv.Sniffer().sniff(f.read(1024)).delimiter
-                    return pd.read_csv(path, sep=sep, encoding=enc)
-                except Exception:
-                    continue
-            raise ValueError("Nenhum encoding ou separador compatível encontrado.")
+    def robust_read_csv(self, file_path):
+        import pandas as pd
+        
+        try:
+            # Tentar UTF-8 primeiro (padrão do iSEA)
+            return pd.read_csv(file_path, encoding='utf-8', sep=',')
+        except:
+            try:
+                # Tentar Latin-1 (Windows)
+                return pd.read_csv(file_path, encoding='latin1', sep=',')
+            except Exception as e:
+                raise ValueError(f"Não foi possível ler o CSV: {e}")
         
     @staticmethod
     def parse_time_string(t: str) -> timedelta:
