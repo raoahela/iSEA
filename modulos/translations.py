@@ -245,7 +245,16 @@ TEXTS = {
         "train_segmentation_model": "Treinar Modelo de Segmentação",
         "sam2_segmentation_created": "Segmentação criada com {} pontos de polígono",
         "sam2_no_mask_to_add": "Nenhuma máscara SAM disponível para adicionar ao treino",
-        "sam2_added_to_training": "Segmentação SAM adicionada ao treino para classe: {}"
+        "sam2_added_to_training": "Segmentação SAM adicionada ao treino para classe: {}",
+        "import_dataset": "Importar Dataset YOLO",
+        "invalid_dataset_structure": "Dataset inválido: pasta 'images' não encontrada",
+        "no_images_found": "Nenhuma imagem encontrada no dataset",
+        "dataset_imported": "Dataset carregado: {} imagens, {} anotações",
+        "dataset_import_success": "Importado {} imagens\nClasses: {}\nAnotações: {}",
+        "dataset_import_error": "Falha ao importar dataset: {}",
+        "train_from_dataset_title": "Treinar a partir do Dataset",
+        "train_from_dataset_question": "Nenhuma anotação manual na sessão atual.\nDeseja treinar a partir do dataset carregado?",
+        "select_dataset_folder": "Selecione a pasta do dataset (contendo images/ e labels/)"
 
     },
     "en": {
@@ -496,6 +505,15 @@ TEXTS = {
         "train_segmentation_model": "Train Segmentation Model",
         "sam2_segmentation_created": "Segmentation created with {} polygon points",
         "sam2_no_mask_to_add": "No SAM mask available to add to training",
-        "sam2_added_to_training": "SAM segmentation added to training set for class: {}"
+        "sam2_added_to_training": "SAM segmentation added to training set for class: {}",
+        "import_dataset": "Import YOLO Dataset",
+        "invalid_dataset_structure": "Invalid dataset: 'images' folder not found",
+        "no_images_found": "No images found in dataset",
+        "dataset_imported": "Loaded dataset: {} images, {} annotations",
+        "dataset_import_success": "Imported {} images\nClasses: {}\nAnnotations: {}",
+        "dataset_import_error": "Failed to import dataset: {}",
+        "train_from_dataset_title": "Train from Dataset",
+        "train_from_dataset_question": "No manual annotations in current session.\nDo you want to train from the loaded dataset?",
+        "select_dataset_folder": "Select the dataset folder (containing images/ and labels/)"
     }
 }

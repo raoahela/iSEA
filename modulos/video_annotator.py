@@ -546,6 +546,10 @@ class VideoAnnotator(QMainWindow):
         create_ds_action.triggered.connect(self.open_training_wizard)
         training_menu.addAction(create_ds_action)
 
+        import_ds_action = QAction(self.texts.get("import_dataset", "Import Dataset"), self)
+        import_ds_action.triggered.connect(self.import_yolo_dataset)
+        training_menu.addAction(import_ds_action)
+
         export_action = QAction(self.texts["export_yolo"], self)
         export_action.triggered.connect(self.export_yolo_annotations_dialog)
         training_menu.addAction(export_action)
@@ -1733,7 +1737,24 @@ class VideoAnnotator(QMainWindow):
             self.velocity2_button.setStyleSheet("background-color: #5c9eff;")
             self.set_status_message("speed_detection_format", "2.0", self.detection_every_n_frames)
 
-    
+    def update_training_menu_state(self):
+        has_data = hasattr(self, 'all_detections') and len(self.all_detections) > 0
+        has_dataset = hasattr(self, 'dataset_frames') and len(self.dataset_frames) > 0
+        
+        # Find training menu actions and enable/disable
+        menubar = self.menuBar()
+        for action in menubar.actions():
+            if action.text() == self.texts.get("train", "Treino"):
+                training_menu = action.menu()
+                if training_menu:
+                    for train_action in training_menu.actions():
+                        text = train_action.text()
+                        if text == self.texts.get("train_yolo", "Train YOLO"):
+                            train_action.setEnabled(has_data or has_dataset)
+                        elif text == self.texts.get("export_yolo", "Export YOLO"):
+                            train_action.setEnabled(has_data)
+                break
+
     def export_yolo_annotations(self, output_dir):
         if not hasattr(self, 'all_detections'):
             QMessageBox.warning(self, self.texts["warning"], self.texts["no_annotations_to_export"])
@@ -1979,25 +2000,384 @@ class VideoAnnotator(QMainWindow):
         if output_dir:
             self.export_yolo_annotations(output_dir)
 
+    def import_yolo_dataset(self):
+        dataset_dir = QFileDialog.getExistingDirectory(
+            self, self.texts.get("import_dataset", "Import YOLO Dataset"))
+        
+        if not dataset_dir:
+            return
+        
+        try:
+            dataset_path = Path(dataset_dir)
+            
+            # Verify it's a valid YOLO dataset structure
+            images_dir = dataset_path / "images"
+            labels_dir = dataset_path / "labels"
+            
+            if not images_dir.exists():
+                self.show_warning_message("warning", "invalid_dataset_structure")
+                return
+            
+            # Find all image files in images/train and images/val
+            image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff'}
+            image_files = []
+            
+            for split in ['train', 'val']:
+                split_dir = images_dir / split
+                if split_dir.exists():
+                    for ext in image_extensions:
+                        image_files.extend(split_dir.glob(f'*{ext}'))
+                        image_files.extend(split_dir.glob(f'*{ext.upper()}'))
+            
+            if not image_files:
+                self.show_warning_message("warning", "no_images_found")
+                return
+            
+            # Load dataset.yaml if exists to get class names
+            yaml_path = dataset_path / "dataset.yaml"
+            classes = []
+            if yaml_path.exists():
+                try:
+                    with open(yaml_path, 'r') as f:
+                        yaml_data = yaml.safe_load(f)
+                    if yaml_data and 'names' in yaml_data:
+                        names = yaml_data['names']
+                        if isinstance(names, dict):
+                            classes = [names[i] for i in sorted(names.keys())]
+                        elif isinstance(names, list):
+                            classes = names
+                except Exception as e:
+                    print(f"Error loading yaml: {e}")
+            
+            # If no classes found, try to infer from label files
+            if not classes and labels_dir.exists():
+                all_labels = set()
+                for split in ['train', 'val']:
+                    split_dir = labels_dir / split
+                    if split_dir.exists():
+                        for label_file in split_dir.glob('*.txt'):
+                            try:
+                                with open(label_file, 'r') as f:
+                                    for line in f:
+                                        parts = line.strip().split()
+                                        if parts:
+                                            all_labels.add(int(parts[0]))
+                            except:
+                                continue
+                classes = [f"class_{i}" for i in sorted(all_labels)]
+            
+            if not classes:
+                classes = ["unknown"]
+            
+            # Populate dataset_frames for the annotator to use
+            self.dataset_frames = []
+            for i, img_path in enumerate(sorted(image_files)):
+                # Determine frame number from filename or use index
+                try:
+                    # Try to extract frame number from filename (e.g., video_name_000123.jpg -> 123)
+                    stem = img_path.stem
+                    if '_' in stem:
+                        frame_num = int(stem.split('_')[-1])
+                    else:
+                        frame_num = i
+                except:
+                    frame_num = i
+                
+                self.dataset_frames.append((str(img_path), frame_num, i))
+            
+            # Load existing annotations from label files
+            self.all_detections = []
+            for img_path_str, frame_num, dataset_idx in self.dataset_frames:
+                # Convert string to Path object
+                img_path = Path(img_path_str)
+                # labels/train/filename.txt or labels/val/filename.txt
+                label_file = labels_dir / img_path.parent.name / f"{img_path.stem}.txt"
+                if label_file.exists():
+                    try:
+                        # Get image dimensions
+                        img = cv2.imread(str(img_path))
+                        if img is None:
+                            continue
+                        h, w = img.shape[:2]
+                        
+                        with open(label_file, 'r') as f:
+                            for line in f:
+                                parts = line.strip().split()
+                                if len(parts) != 5:
+                                    continue
+                                
+                                class_id = int(parts[0])
+                                x_center = float(parts[1])
+                                y_center = float(parts[2])
+                                width = float(parts[3])
+                                height = float(parts[4])
+                                
+                                # Convert YOLO format back to pixel coordinates
+                                x1 = int((x_center - width/2) * w)
+                                y1 = int((y_center - height/2) * h)
+                                x2 = int((x_center + width/2) * w)
+                                y2 = int((y_center + height/2) * h)
+                                
+                                class_name = classes[class_id] if class_id < len(classes) else f"class_{class_id}"
+                                
+                                annotation = {
+                                    "x1": x1, "y1": y1, "x2": x2, "y2": y2,
+                                    "label": class_name,
+                                    "class": class_name,
+                                    "confidence": 1.0,
+                                    "type": "manual",
+                                    "frame_number": dataset_idx,
+                                    "video_path": str(img_path),
+                                    "timestamp": "00:00:00",
+                                    "frame_source": (str(img_path), dataset_idx),
+                                    "frame_dimensions": f"{w}x{h}"
+                                }
+                                self.all_detections.append(annotation)
+                    
+                    except Exception as e:
+                        print(f"Error loading labels for {img_path}: {e}")
+                        continue
+            
+            # Switch to dataset mode and load first frame
+            self.dataset_mode = True
+            if self.dataset_frames:
+                first_path = self.dataset_frames[0][0]
+                self.start_video(first_path)
+                self.current_frame_num = 0
+                self.total_frames = len(self.dataset_frames)
+                self.paused = True
+                self.dataset_index = 0
+                
+                # Update taxon grid with loaded classes
+                self.custom_classes = classes
+                self.refresh_taxon_grid()
+                
+                # Update status
+                self.set_status_message("dataset_imported", len(self.dataset_frames), len(self.all_detections))
+                
+                self.show_info_message(
+                    "dataset_ready",
+                    "dataset_import_success",
+                    len(self.dataset_frames),
+                    ', '.join(classes),
+                    len(self.all_detections)
+                )
+                
+        except Exception as e:
+            self.show_error_message("error", "dataset_import_error", str(e))
+            import traceback
+            traceback.print_exc()
+
+
     def train_yolo_model(self):
         """Start training the YOLO model with manual annotations"""
+        
+        # Check if we have a dataset loaded from import or wizard
+        has_dataset = (hasattr(self, 'dataset_frames') and self.dataset_frames and 
+                    len(self.dataset_frames) > 0)
+        
+        # Collect manual annotations from all_detections if not already done
         if not hasattr(self, 'all_detections'):
             self.all_detections = []
-
+        
+        # Add any active annotations from video_label
         for ann in self.video_label.active_annotations:
             if ann.get("type") == "manual" and ann not in self.all_detections:
                 ann.setdefault("frame_number", self.current_frame_num)
                 ann.setdefault("video_path", self.video_path or "Live")
                 self.all_detections.append(ann)
+        
+        # Get manual annotations
+        manual_annotations = [
+            ann for ann in self.all_detections 
+            if ann.get("type") == "manual" and 
+            all(key in ann for key in ["x1", "y1", "x2", "y2", "class"])
+        ]
+        
+        # If no manual annotations but we have a dataset, ask user to select dataset directory
+        if not manual_annotations and has_dataset:
+            reply = QMessageBox.question(
+                self,
+                self.texts["train_from_dataset_title"],
+                self.texts["train_from_dataset_question"],
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                # Ask user to select the dataset folder (containing images/ and labels/)
+                dataset_dir = QFileDialog.getExistingDirectory(
+                    self, 
+                    self.texts["select_dataset_folder"],
+                    str(Path(self.dataset_frames[0][0]).parent.parent) if self.dataset_frames else ""
+                )
+                if not dataset_dir:
+                    return
+                
+                # Proceed directly to training configuration
+                try:
+                    models_dir = os.path.join(os.getcwd(), "models")
+                    os.makedirs(models_dir, exist_ok=True)
+                    
+                    name, ok = QInputDialog.getText(
+                        self,
+                        self.texts["name_model_title"],
+                        self.texts["name_model_label"]
+                    )
+                    if not ok or not name.strip():
+                        return
+                    safe_name = "".join(c for c in name.strip() if c.isalnum() or c in ("_", "-"))
+                    if not safe_name:
+                        safe_name = "custom_model"
 
-        if not any(d.get("type") == "manual" for d in self.all_detections):
+                    # Load classes from dataset.yaml if exists
+                    yaml_path = os.path.join(dataset_dir, "dataset.yaml")
+                    classes = []
+                    if os.path.exists(yaml_path):
+                        with open(yaml_path, 'r') as f:
+                            yaml_data = yaml.safe_load(f)
+                        if yaml_data and 'names' in yaml_data:
+                            names = yaml_data['names']
+                            if isinstance(names, dict):
+                                classes = [names[i] for i in sorted(names.keys())]
+                            elif isinstance(names, list):
+                                classes = names
+                    
+                    if not classes:
+                        # Try to infer from label files
+                        labels_dir = Path(dataset_dir) / "labels"
+                        all_labels = set()
+                        for split in ['train', 'val']:
+                            split_dir = labels_dir / split
+                            if split_dir.exists():
+                                for label_file in split_dir.glob('*.txt'):
+                                    try:
+                                        with open(label_file, 'r') as f:
+                                            for line in f:
+                                                parts = line.strip().split()
+                                                if parts:
+                                                    all_labels.add(int(parts[0]))
+                                    except:
+                                        continue
+                        classes = [f"class_{i}" for i in sorted(all_labels)]
+
+                    # Create or update dataset.yaml
+                    config_path = os.path.join(dataset_dir, "dataset.yaml")
+                    config = {
+                        "path": os.path.abspath(dataset_dir).replace("\\", "/") + "/",
+                        "train": "images/train",
+                        "val": "images/val",
+                        "names": {i: name for i, name in enumerate(classes)},
+                        "nc": len(classes)
+                    }
+                    
+                    with open(config_path, 'w') as f:
+                        yaml.dump(config, f)
+
+                    # Training settings
+                    train_config = {
+                        "data": config_path,
+                        "epochs": 100,
+                        "imgsz": 640,
+                        "batch": 8,
+                        "name": "custom_model",
+                        "exist_ok": True,
+                        "patience": 20,
+                        "optimizer": "auto",
+                        "lr0": 0.01,
+                        "device": "0" if torch.cuda.is_available() else "cpu",
+                        "workers": 4,
+                        "save_period": 10,
+                        "single_cls": False,
+                        "augment": True,
+                        "name": os.path.join(models_dir, safe_name)
+                    }
+                    
+                    # Advanced settings dialog
+                    advanced_dialog = QDialog(self)
+                    advanced_dialog.setWindowTitle(self.texts["advanced_training_settings"])
+                    layout = QVBoxLayout()
+                    
+                    form_layout = QFormLayout()
+                    
+                    epochs_spin = QSpinBox()
+                    epochs_spin.setRange(1, 1000)
+                    epochs_spin.setValue(train_config["epochs"])
+                    form_layout.addRow(self.texts["epochs"], epochs_spin)
+                    
+                    batch_spin = QSpinBox()
+                    batch_spin.setRange(1, 64)
+                    batch_spin.setValue(train_config["batch"])
+                    form_layout.addRow(self.texts["batch_size"], batch_spin)
+                    
+                    imgsz_spin = QSpinBox()
+                    imgsz_spin.setRange(320, 1280)
+                    imgsz_spin.setSingleStep(32)
+                    imgsz_spin.setValue(train_config["imgsz"])
+                    form_layout.addRow(self.texts["image_size"], imgsz_spin)
+                    
+                    lr_spin = QDoubleSpinBox()
+                    lr_spin.setRange(0.0001, 0.1)
+                    lr_spin.setSingleStep(0.001)
+                    lr_spin.setValue(train_config["lr0"])
+                    form_layout.addRow(self.texts["learning_rate"], lr_spin)
+                    
+                    device_combo = QComboBox()
+                    device_combo.addItems(["CPU", "GPU"] if torch.cuda.is_available() else ["CPU"])
+                    form_layout.addRow(self.texts["device"], device_combo)
+                    
+                    button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+                    button_box.accepted.connect(advanced_dialog.accept)
+                    button_box.rejected.connect(advanced_dialog.reject)
+                    
+                    layout.addLayout(form_layout)
+                    layout.addWidget(button_box)
+                    advanced_dialog.setLayout(layout)
+                    
+                    if advanced_dialog.exec() == QDialog.DialogCode.Accepted:
+                        train_config.update({
+                            "epochs": epochs_spin.value(),
+                            "batch": batch_spin.value(),
+                            "imgsz": imgsz_spin.value(),
+                            "lr0": lr_spin.value(),
+                            "device": "0" if device_combo.currentText() == "GPU" else "cpu"
+                        })
+                    else:
+                        return
+                    
+                    # Progress dialog
+                    progress = QProgressDialog(
+                        self.texts["training_progress"],   
+                        self.texts["cancel"],
+                        0,
+                        train_config["epochs"],       
+                        self
+                    )
+                    progress.setWindowTitle(self.texts["training_model"])
+                    progress.setWindowModality(Qt.WindowModality.WindowModal)
+                    progress.setMinimumDuration(0)
+                    progress.show()
+
+                    self._last_model_path = os.path.join(models_dir, safe_name, "weights", "best.pt")
+
+                    self.train_thread = TrainThread(train_config)
+                    self.train_thread.epoch_progress.connect(progress.setValue)   
+                    self.train_thread.finished.connect(lambda: self.on_training_finished(progress))
+                    self.train_thread.start()
+                    
+                except Exception as e:
+                    self.show_error_message("error", "config_failed", str(e))
+                    print(self.texts["debug_config_failed"].format(traceback.format_exc()))
+                return
+            else:
+                return
+        elif not manual_annotations:
             self.show_warning_message("warning", "no_manual_annotations_train")
             return
 
+        # Original train_yolo_model code continues here for when we have manual annotations
         try:
             models_dir = os.path.join(os.getcwd(), "models")
             os.makedirs(models_dir, exist_ok=True)
-            # Asks where to save the dataset and the trained model 
+            
             dataset_dir = QFileDialog.getExistingDirectory(
                 self, self.texts["train_dataset_dialog"])
             
@@ -2010,24 +2390,18 @@ class VideoAnnotator(QMainWindow):
                 self.texts["name_model_label"]
             )
             if not ok or not name.strip():
-                return  # user canceled 
+                return
             safe_name = "".join(c for c in name.strip() if c.isalnum() or c in ("_", "-"))
             if not safe_name:
                 safe_name = "custom_model"
 
-            # First exports the annotations in YOLO format 
+            # First exports the annotations in YOLO format
             self.export_yolo_annotations(dataset_dir)
             
             # Get unique classes from manual annotations
-            manual_annotations = [
-                ann for ann in self.all_detections 
-                if ann.get("type") == "manual" and 
-                all(key in ann for key in ["x1", "y1", "x2", "y2", "class"])
-            ]
-            
             classes = sorted(list(set(ann["class"] for ann in manual_annotations)))
             
-            # yolo dataset configuration 
+            # YOLO dataset configuration
             config = {
                 "path": os.path.abspath(dataset_dir).replace("\\", "/") + "/",
                 "train": "images/train",
@@ -2036,41 +2410,48 @@ class VideoAnnotator(QMainWindow):
                 "nc": len(classes)
             }
             
-            # saves YAML configuration file 
+            # Save YAML configuration file
             config_path = os.path.join(dataset_dir, "dataset.yaml")
             with open(config_path, 'w') as f:
                 yaml.dump(config, f)
 
             images_dir = Path(dataset_dir) / "images"
             
-            # verifies is dataset_frames exists 
+            # Check if dataset_frames exists
             is_dataset_mode = self.dataset_mode and hasattr(self, 'dataset_frames') and self.dataset_frames
             
             if is_dataset_mode:
-                # Gets indexes form all dataset frames 
+                # Get indexes from all dataset frames
                 all_indices = set(range(len(self.dataset_frames)))
                 
-                # identifies which indexes has annotations 
+                # Identify which indexes have annotations
                 frames_with_annotations = {ann.get("frame_number", 0) for ann in manual_annotations}
                 
-                # maps frame numbers for dataset indexes 
+                # Map frame numbers to dataset indexes
                 annotated_indices = set()
                 for idx, (_, _, dataset_idx) in enumerate(self.dataset_frames):
                     if dataset_idx in frames_with_annotations:
                         annotated_indices.add(idx)
                 
-                # divides annotadet frames  80/20
+                # Split annotated frames 80/20
                 annotated_list = list(annotated_indices)
+                import random
+                random.shuffle(annotated_list)
                 split_point = int(len(annotated_list) * 0.8)
                 train_indices = set(annotated_list[:split_point])
                 val_indices = set(annotated_list[split_point:])
                 
-                # identifies frames without annotation (background)
+                # Identify frames without annotation (background)
                 background_indices = all_indices - annotated_indices
                 
                 if background_indices:
-                    annotated_indices = set(ann.get("frame_number", 0) for ann in manual_annotations)
-                    bg_count = self.add_background_images_to_dataset(images_dir, train_indices, val_indices, annotated_indices)
+                    bg_list = list(background_indices)
+                    random.shuffle(bg_list)
+                    bg_split = int(len(bg_list) * 0.8)
+                    train_bg = set(bg_list[:bg_split])
+                    val_bg = set(bg_list[bg_split:])
+                    
+                    bg_count = self.add_background_images_to_dataset(images_dir, train_bg, val_bg)
                 else:
                     bg_count = 0
             else:
@@ -2079,7 +2460,7 @@ class VideoAnnotator(QMainWindow):
             if bg_count > 0:
                 self.set_status_message("background_images_added", bg_count)
             
-            # training settings 
+            # Training settings
             train_config = {
                 "data": config_path,
                 "epochs": 100,
@@ -2098,7 +2479,7 @@ class VideoAnnotator(QMainWindow):
                 "name": os.path.join(models_dir, safe_name)
             }
             
-            # advanced settings file 
+            # Advanced settings dialog
             advanced_dialog = QDialog(self)
             advanced_dialog.setWindowTitle(self.texts["advanced_training_settings"])
             layout = QVBoxLayout()
@@ -2171,7 +2552,7 @@ class VideoAnnotator(QMainWindow):
             self.train_thread.start()
             
         except Exception as e:
-            QMessageBox.critical(self, "Erro", self.texts["config_failed"].format(str(e)))
+            self.show_error_message("error", "config_failed", str(e))
             print(self.texts["debug_config_failed"].format(traceback.format_exc()))
 
     def on_training_finished(self, progress):
