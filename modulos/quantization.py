@@ -5,7 +5,7 @@ from ultralytics import YOLO
 def quantize_fp16_pt(model_path, output_path):
     """
     Converte modelo para FP16 (half precision)
-    2x speedup em GPUs modernas, arquivo menor
+    2x speedup, arquivo menor
     """
     # Carrega modelo
     model = YOLO(model_path)

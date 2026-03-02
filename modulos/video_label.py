@@ -4,7 +4,6 @@ from PyQt6.QtGui import QPainter, QPen, QColor
 from PyQt6.QtWidgets import QLabel, QSizePolicy
 
 class VideoLabel(QLabel):
-    """Class for manual annotations"""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMouseTracking(True)
@@ -43,12 +42,10 @@ class VideoLabel(QLabel):
         self.hovered_annotation = None
 
     def setPixmap(self, pixmap):
-        """Stores the original pixmap and updates the display"""
         self._pixmap = pixmap
         self.update_display()
 
     def update_display(self):
-        """Updates the display of the resized video"""
         if self._pixmap is None:
             return
             
@@ -68,20 +65,16 @@ class VideoLabel(QLabel):
         super().setPixmap(scaled_pixmap)
 
     def resizeEvent(self, event):
-        """Resizes the video when the widget changes size"""
         self.update_display()
         super().resizeEvent(event)
 
     def set_video_rect(self, rect):
-        """Defines the area where the video is being displayed"""
         self.video_rect = rect
 
     def get_video_rect(self):
-        """Returns the video area or the entire rectangle if not set"""
         return self.video_rect if self.video_rect else self.rect()
 
     def reset_annotations(self):
-        """Clear only visible annotations"""
         self.active_annotations = []
         self.update()
 
@@ -145,7 +138,6 @@ class VideoLabel(QLabel):
                 self.delete_annotation_at(pos, video_rect) 
 
     def _get_frame_for_sam(self, main_win):
-        """Helper to get current frame for SAM"""
         if hasattr(main_win, 'current_frame') and main_win.current_frame is not None:
             return main_win.current_frame
         elif hasattr(main_win, 'cap') and main_win.cap is not None:
@@ -281,7 +273,6 @@ class VideoLabel(QLabel):
         self.update()
 
     def delete_annotation_at(self, pos, video_rect):
-        """Remove the annotation under the cursor (right click)."""
         x = (pos.x() - video_rect.left()) / video_rect.width()
         y = (pos.y() - video_rect.top())  / video_rect.height()
 
@@ -397,7 +388,6 @@ class VideoLabel(QLabel):
         painter.end()
 
     def get_frame_coordinates(self, pos):
-        """Convert widget coordinates to original frame coordinates"""
         video_rect = self.get_video_rect()
         if not video_rect or video_rect.width() == 0 or video_rect.height() == 0:
             return None

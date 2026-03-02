@@ -4,7 +4,6 @@ from PyQt6.QtWidgets import QApplication
 from modulos.video_annotator import VideoAnnotator
 
 def resource_path(relative_path):
-    """Obtém caminho correto para arquivos no executável"""
     try:
         base_path = sys._MEIPASS
     except Exception:

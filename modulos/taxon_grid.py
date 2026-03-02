@@ -52,18 +52,15 @@ class TaxonGrid(QWidget):
         self.title_changed.emit(self.texts["taxons"])
 
     def clear(self):
-        """Remove all buttons from the grid"""
         for btn in list(self._buttons.values()):
             self.grid.removeWidget(btn)
         self._buttons.clear()
 
     def populate(self, classes):
-        """Receives list of strings and make the buttons of the taxon grid"""
         for name in sorted(classes, key=str.lower):
             self.insert_button(name)
 
     def add_taxon(self, name):
-        """Inserts new taxon (if it does not already exist)"""
         if name and name not in self._buttons:
             self.insert_button(name)
 

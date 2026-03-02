@@ -269,7 +269,6 @@ class VideoAnnotator(QMainWindow):
         self.setAcceptDrops(True)
 
     def recolor_icon(self, standard_icon, color=QColor("white")):
-        """Recolor icons from QStyle for the dark mode"""
         pixmap = self.style().standardIcon(standard_icon).pixmap(24, 24) #convert the native icon from the system to pixmap.
         painter = QPainter(pixmap) #creates a pencil that draws directly on the pixmap
         painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn) #ignores transparent backgroung
@@ -278,19 +277,15 @@ class VideoAnnotator(QMainWindow):
         return QIcon(pixmap) 
 
     def set_status_message(self, key, *args):
-        """Defines status messages"""
         self.status_label.setText(self.texts[key].format(*args))
 
     def show_error_message(self, title_key, message_key, *args):
-        """Exhibits an error message"""
         QMessageBox.critical(self, self.texts[title_key], self.texts[message_key].format(*args))
 
     def show_warning_message(self, title_key, message_key, *args):
-        """Exhibits an warning message"""
         QMessageBox.warning(self, self.texts[title_key], self.texts[message_key].format(*args))
 
     def show_info_message(self, title_key, message_key, *args):
-        """Exhibits an info message"""
         QMessageBox.information(self, self.texts[title_key], self.texts[message_key].format(*args))
         
     def apply_light_style(self):
@@ -596,7 +591,6 @@ class VideoAnnotator(QMainWindow):
 
 
     def toggle_detections_history(self):
-        """toggle visibility of the detections dock"""
         if self.detections_dock.isVisible():
             self.detections_dock.hide()
         else:
@@ -760,7 +754,6 @@ class VideoAnnotator(QMainWindow):
         self.prompt_save_recording()
 
     def prompt_save_recording(self):
-        """Asks if the user wants to save the video"""
         msg = QMessageBox()
         msg.setIcon(QMessageBox.Icon.Question)
         msg.setText(self.texts["save_recording_question"])
@@ -856,7 +849,6 @@ class VideoAnnotator(QMainWindow):
                 self.cap = None
 
     def refresh_taxon_grid(self):
-        """Clears and repopulates the grid with the current models classes"""
         if self.taxon_grid is None:
             return
         self.taxon_grid.clear()                    
@@ -918,7 +910,6 @@ class VideoAnnotator(QMainWindow):
             self.start_video(file_path)
 
     def start_video(self, file_path):
-        """Starts a new video"""
         self.video_path = file_path
         self.video_name_label.setText(self.texts["video_name_format"].format(os.path.basename(file_path)))
         
@@ -1016,7 +1007,6 @@ class VideoAnnotator(QMainWindow):
         return mean_diff < threshold
     
     def update_frame(self):
-        """Main frame update loop - handles video playback and detection"""
         if self.paused or self.cap is None or not self.cap.isOpened():
             return
 
@@ -1039,7 +1029,7 @@ class VideoAnnotator(QMainWindow):
                 self.current_frame_num = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES))
                 self.update_progress_slider()
             
-            # ========== MODE 1x: SYNCHRONOUS DETECTION ==========
+            # MODE 1x: 
             if self.continuous_detection and self.model and not self.velocity:
                 frame_copy = np.ascontiguousarray(frame.copy())
                 
@@ -1082,7 +1072,7 @@ class VideoAnnotator(QMainWindow):
                             self.annotations.append(detection)
                             self.detections_dock.add_detection(detection)
 
-            # ========== MODE 2x: ASYNCHRONOUS DETECTION ==========
+            # MODE 2x: 
             # Check for pending detection results from thread
             # MOVED TO AFTER the 1x block to ensure it's checked every frame
             should_detect = True
@@ -1271,7 +1261,6 @@ class VideoAnnotator(QMainWindow):
             return False
     
     def on_detection_finished(self, results, used_frame, frame_num):
-        """Callback from detection thread"""
         if results is None or not results.boxes:
             return
 
@@ -1450,7 +1439,6 @@ class VideoAnnotator(QMainWindow):
         self.video_label.update()
 
     def change_drawing_class(self, name):
-        """Updates class, color, and filters whenever the user chooses a taxon in the grid"""
         self.video_label.current_class = name
         hue = hash(name) % 360
         self.video_label.drawing_color = QColor.fromHsv(hue, 255, 200)
@@ -1492,7 +1480,6 @@ class VideoAnnotator(QMainWindow):
             self.set_status_message("frame_error", str(e))
 
     def update_video_display(self):
-        """Updates the video display while maintaining the aspect ratio"""
         if not hasattr(self.video_label, '_pixmap') or self.video_label._pixmap is None:
             return
         
@@ -1524,7 +1511,6 @@ class VideoAnnotator(QMainWindow):
         self.video_label.setPixmap(scaled_pixmap)
 
     def resizeEvent(self, event):
-        """Redraws the frame when the window is resized"""
         super().resizeEvent(event)
         self.update_video_display()
 
@@ -1636,7 +1622,6 @@ class VideoAnnotator(QMainWindow):
             self.update_time_labels()
                 
     def update_progress_slider(self):
-        """Updates the slider position"""
         if self.total_frames > 0:
             progress = int((self.current_frame_num / self.total_frames) * 100)
             self.progress_slider.setValue(progress)            
@@ -1707,7 +1692,6 @@ class VideoAnnotator(QMainWindow):
         return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
     
     def velocity2(self):
-        """Aumenta a velocidade do vídeo"""
         if self.cap is None:
             return
         if self.velocity:
@@ -1993,7 +1977,6 @@ class VideoAnnotator(QMainWindow):
             return background_count
     
     def export_yolo_annotations_dialog(self):
-        """Opens dialog to select output directory""" 
         output_dir = QFileDialog.getExistingDirectory(
             self, self.texts["export_yolo_dialog"])
         
@@ -2170,8 +2153,6 @@ class VideoAnnotator(QMainWindow):
 
 
     def train_yolo_model(self):
-        """Start training the YOLO model with manual annotations"""
-        
         # Check if we have a dataset loaded from import or wizard
         has_dataset = (hasattr(self, 'dataset_frames') and self.dataset_frames and 
                     len(self.dataset_frames) > 0)
@@ -2451,7 +2432,7 @@ class VideoAnnotator(QMainWindow):
                     train_bg = set(bg_list[:bg_split])
                     val_bg = set(bg_list[bg_split:])
                     
-                    bg_count = self.add_background_images_to_dataset(images_dir, train_bg, val_bg)
+                    bg_count = self.add_background_images_to_dataset(images_dir, train_bg, val_bg, annotated_indices)
                 else:
                     bg_count = 0
             else:
@@ -2556,7 +2537,6 @@ class VideoAnnotator(QMainWindow):
             print(self.texts["debug_config_failed"].format(traceback.format_exc()))
 
     def on_training_finished(self, progress):
-        """Dealing with the end of training"""
         progress.close()
         
         if self.train_thread.success:
@@ -2579,7 +2559,6 @@ class VideoAnnotator(QMainWindow):
             ) 
 
     def save_annotations(self):
-        """Export annotations to CSV + save original frames to a user-chosen folder"""
         if not self.video_path and not self.live_mode:
             self.status_label.setText(self.texts["no_loaded"])
             return
@@ -2763,7 +2742,6 @@ class VideoAnnotator(QMainWindow):
             QMessageBox.critical(self, "Error", f"Export failed: {str(e)}")
 
     def load_annotations(self, file_path):
-        """Load annotations from a JSON file"""
         try:
             with open(file_path, 'r') as f:
                 data = json.load(f)
@@ -2925,7 +2903,6 @@ class VideoAnnotator(QMainWindow):
         QDesktopServices.openUrl(url)
     
     def set_current_frame(self, frame_num):
-        """Centralizes frame switching and synchronizes annotations"""
         if self.cap is None or self.live_mode:
             return
 
@@ -3143,7 +3120,6 @@ class VideoAnnotator(QMainWindow):
 
     
     def init_sam2(self):
-        """Initialize SAM 2 model and thread"""
         try:
             self.sam2_thread = SAM2Thread("sam2.1_b.pt", self)
             self.sam2_thread.mask_finished.connect(self.on_sam2_mask_finished)
@@ -3153,59 +3129,62 @@ class VideoAnnotator(QMainWindow):
             self.status_label.setText("SAM 2 initialization failed")
 
     def on_sam2_mask_finished(self, mask_data, original_frame, frame_num):
-        """Store SAM mask as segmentation-ready annotation"""
         try:
             if mask_data and mask_data["segmentation"] is not None:
-                
                 mask = mask_data["segmentation"]
                 
-                # Extract polygon contours from mask
-                contours = measure.find_contours(mask, 0.5)  # 0.5 threshold
+                # Extract polygon contours from binary mask
+                contours = measure.find_contours(mask, 0.5)  # Threshold at 0.5
                 if not contours:
-                    self.status_label.setText("No valid contours found")
+                    self.status_label.setText("No valid contours found in mask")
                     return
                 
                 # Use largest contour (main object)
                 main_contour = max(contours, key=lambda c: len(c))
                 
-                # Normalize coordinates to [0,1] for YOLO format
+                # Normalize coordinates to 0-1 range for YOLO format
+                # Note: find_contours returns (row, col) = (y, x)
                 h, w = mask.shape[:2]
-                normalized_coords = [(y/w, x/h) for x, y in main_contour]
+                normalized_coords = []
+                for y, x in main_contour:
+                    # Convert to x,y and normalize
+                    nx = float(x) / w
+                    ny = float(y) / h
+                    normalized_coords.append((nx, ny))
                 
-                # Create segmentation annotation (NEW format)
+                # Create segmentation annotation
                 seg_annotation = {
-                    "type": "segmentation",  # NEW type
+                    "type": "segmentation",
                     "class": self.video_label.current_class,
                     "confidence": float(mask_data["scores"][0]) if mask_data.get("scores") else 0.95,
                     "frame_number": frame_num,
                     "timestamp": self.get_video_timestamp(frame_num),
                     "video_path": self.video_path or "Live",
-                    "mask": mask,  # Keep binary mask for visualization
-                    "polygon": normalized_coords,  # ** YOLO segmentation format **
+                    "polygon": normalized_coords,  # Normalized (x,y) pairs
                     "frame_source": (self.video_path, frame_num),
-                    "frame_dimensions": f"{original_frame.shape[1]}x{original_frame.shape[0]}"
+                    "frame_dimensions": f"{w}x{h}"
                 }
                 
-                # Store in segmentation-specific storage
+                # Store in segmentation annotations list
                 if not hasattr(self, 'segmentation_annotations'):
                     self.segmentation_annotations = []
                 self.segmentation_annotations.append(seg_annotation)
                 
-                # Also add to detections dock for visualization
+                # Add to detections dock for visualization
                 self.detections_dock.add_detection(seg_annotation)
                 
                 self.status_label.setText(
-                    self.texts["sam2_segmentation_created"].format(len(normalized_coords))
+                    f"Segmentation created: {len(normalized_coords)} points, "
+                    f"class: {self.video_label.current_class}"
                 )
                 
-                # Draw mask on frame
+                # Redraw frame with mask overlay
                 self.redraw_frame_with_mask(mask_data, original_frame)
                 
         except Exception as e:
             self.on_sam2_error(str(e))
 
     def on_sam2_error(self, error_msg):
-        """Handle SAM 2 errors"""
         self.status_label.setText(self.texts["sam2_error"].format(error_msg))
 
     def redraw_frame_with_mask(self, mask_data, original_frame):
@@ -3308,7 +3287,6 @@ class VideoAnnotator(QMainWindow):
 
     
     def export_yolo_segmentation_annotations(self, output_dir):
-        """Export SAM masks in YOLO segmentation format"""
         if not hasattr(self, 'segmentation_annotations') or not self.segmentation_annotations:
             QMessageBox.warning(self, self.texts["warning"], "No segmentation annotations to export")
             return
@@ -3406,42 +3384,220 @@ class VideoAnnotator(QMainWindow):
         if output_dir:
             self.export_yolo_segmentation_annotations(output_dir)
 
-    def train_segmentation_model(self):
-        """Train YOLO segmentation model"""
+    def export_yolo_segmentation_annotations(self, output_dir):
+        # Check if we have segmentation annotations in memory
         if not hasattr(self, 'segmentation_annotations') or not self.segmentation_annotations:
-            QMessageBox.warning(self, "Warning", "No segmentation annotations available")
-            return
+            QMessageBox.warning(self, self.texts["warning"], "No segmentation annotations to export")
+            return 0
         
-        # Ask for dataset directory
-        dataset_dir = QFileDialog.getExistingDirectory(
-            self, "Select segmentation dataset folder"
-        )
-        if not dataset_dir:
-            return
-        
-        # Ask for model name
-        name, ok = QInputDialog.getText(self, "Model Name", "Enter model name:")
-        if not ok or not name:
-            return
-        
-        self.export_yolo_segmentation_annotations(dataset_dir)
+        try:
+            # Create directory structure
+            images_dir = Path(output_dir) / "images"
+            labels_dir = Path(output_dir) / "labels"
+            
+            # Create train/val subdirectories
+            (images_dir / "train").mkdir(parents=True, exist_ok=True)
+            (images_dir / "val").mkdir(parents=True, exist_ok=True)
+            (labels_dir / "train").mkdir(parents=True, exist_ok=True)
+            (labels_dir / "val").mkdir(parents=True, exist_ok=True)
+            
+            # Get unique classes
+            classes = sorted(list(set(ann["class"] for ann in self.segmentation_annotations)))
+            class_to_id = {name: idx for idx, name in enumerate(classes)}
+            
+            # Group annotations by frame number
+            frames_dict = defaultdict(list)
+            for ann in self.segmentation_annotations:
+                frame_num = ann.get("frame_number", 0)
+                frames_dict[frame_num].append(ann)
+            
+            all_frames = sorted(frames_dict.keys())
+            
+            # 80/20 train/val split
+            import random
+            random.shuffle(all_frames)
+            split_idx = int(0.8 * len(all_frames))
+            train_frames = set(all_frames[:split_idx])
+            val_frames = set(all_frames[split_idx:])
+            
+            # Progress dialog
+            progress = QProgressDialog("Exporting segmentation masks...", "Cancel", 
+                                    0, len(frames_dict), self)
+            progress.setWindowModality(Qt.WindowModality.WindowModal)
+            progress.show()
+            
+            exported_count = 0
+            
+            # Check if we are in dataset mode (images already on disk)
+            is_dataset_mode = getattr(self, 'dataset_mode', False) and hasattr(self, 'dataset_frames')
+            
+            for i, (frame_num, annotations) in enumerate(frames_dict.items()):
+                if progress.wasCanceled():
+                    break
+                
+                # Determine train or val split
+                split = "train" if frame_num in train_frames else "val"
+                
+                # Get image path and copy to output
+                if is_dataset_mode:
+                    # Dataset mode: copy existing image file
+                    if 0 <= frame_num < len(self.dataset_frames):
+                        source_path, _, _ = self.dataset_frames[frame_num]
+                        if os.path.exists(source_path):
+                            img_name = f"seg_{frame_num:06d}.jpg"
+                            img_path = images_dir / split / img_name
+                            shutil.copy2(source_path, img_path)
+                        else:
+                            print(f"Warning: Source image not found: {source_path}")
+                            continue
+                    else:
+                        print(f"Warning: Frame {frame_num} out of range in dataset")
+                        continue
+                else:
+                    # Video mode: extract and save frame
+                    frame = self._extract_frame(frame_num)
+                    if frame is None:
+                        print(f"Warning: Could not extract frame {frame_num}")
+                        continue
+                    
+                    img_name = f"seg_{frame_num:06d}.jpg"
+                    img_path = images_dir / split / img_name
+                    cv2.imwrite(str(img_path), frame)
+                
+                # Save segmentation label file (polygon format)
+                label_name = f"seg_{frame_num:06d}.txt"
+                label_path = labels_dir / split / label_name
+                
+                with open(label_path, 'w') as f:
+                    for ann in annotations:
+                        class_id = class_to_id[ann["class"]]
+                        coords = ann["polygon"]  # List of (x,y) normalized 0-1
+                        
+                        # YOLO segmentation format: class_id x1 y1 x2 y2 x3 y3 ...
+                        line = f"{class_id} " + " ".join([f"{x:.6f} {y:.6f}" for x, y in coords])
+                        f.write(line + "\n")
+                
+                exported_count += 1
+                progress.setValue(i)
+                QApplication.processEvents()
+            
+            progress.close()
+            
+            # Create dataset.yaml configuration file
+            yaml_path = Path(output_dir) / "dataset.yaml"
+            abs_path = str(Path(output_dir).absolute()).replace("\\", "/")
+            
+            with open(yaml_path, 'w') as f:
+                f.write(f"# YOLO Segmentation Dataset\n")
+                f.write(f"path: {abs_path}/\n")
+                f.write(f"train: images/train\n")
+                f.write(f"val: images/val\n")
+                f.write(f"nc: {len(classes)}\n")
+                f.write(f"names:\n")
+                for idx, name in enumerate(classes):
+                    f.write(f"  {idx}: {name}\n")
+            
+            # Count files created
+            train_imgs = len(list((images_dir / "train").glob("*.jpg")))
+            val_imgs = len(list((images_dir / "val").glob("*.jpg")))
+            train_labels = len(list((labels_dir / "train").glob("*.txt")))
+            val_labels = len(list((labels_dir / "val").glob("*.txt")))
+            
+            QMessageBox.information(
+                self, 
+                "Export Complete", 
+                f"Segmentation dataset exported to:\n{output_dir}\n\n"
+                f"Train: {train_imgs} images, {train_labels} labels\n"
+                f"Val: {val_imgs} images, {val_labels} labels\n"
+                f"Total annotations: {len(self.segmentation_annotations)}\n"
+                f"Classes: {classes}"
+            )
+            
+            return exported_count
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Export failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return 0
 
-        # Configure training (similar to detection but with -seg model)
+    def train_segmentation_model(self):
+        # Check if we have segmentation annotations in current session
+        has_annotations = hasattr(self, 'segmentation_annotations') and len(self.segmentation_annotations) > 0
+        
+        if not has_annotations:
+            # No annotations in memory - ask to use existing dataset
+            reply = QMessageBox.question(
+                self,
+                "No Segmentations in Memory",
+                "No segmentation annotations in current session.\nUse existing dataset folder?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            
+            if reply == QMessageBox.StandardButton.No:
+                return
+            
+            # User wants to use existing dataset - select folder
+            dataset_dir = QFileDialog.getExistingDirectory(
+                self, "Select segmentation dataset folder"
+            )
+            if not dataset_dir:
+                return
+            
+            # Verify dataset has required structure
+            yaml_path = Path(dataset_dir) / "dataset.yaml"
+            if not yaml_path.exists():
+                QMessageBox.warning(self, "Error", 
+                                "No dataset.yaml found in selected folder.\n"
+                                "Please select a valid YOLO dataset.")
+                return
+            
+            # Get model name for training
+            name, ok = QInputDialog.getText(self, "Model Name", "Enter model name:")
+            if not ok or not name:
+                return
+                
+        else:
+            # We have annotations in memory - need to export first
+            dataset_dir = QFileDialog.getExistingDirectory(
+                self, "Select folder to save segmentation dataset"
+            )
+            if not dataset_dir:
+                return
+            
+            # Export annotations to YOLO format BEFORE training
+            exported = self.export_yolo_segmentation_annotations(dataset_dir)
+            
+            if exported == 0:
+                QMessageBox.warning(self, "Error", "Failed to export dataset")
+                return
+            
+            # Get model name
+            name, ok = QInputDialog.getText(self, "Model Name", "Enter model name:")
+            if not ok or not name:
+                return
+        
+        # Configure training parameters
+        yaml_path = Path(dataset_dir) / "dataset.yaml"
+        
         train_config = {
-            "data": os.path.join(dataset_dir, "dataset.yaml"),
-            "epochs": 50,  # Segmentation needs fewer epochs typically
+            "data": str(yaml_path),  # Absolute path to dataset.yaml as string
+            "epochs": 50,
             "imgsz": 640,
             "batch": 8,
-            "task": "segment",  # IMPORTANT!
             "name": f"seg_model_{name}",
             "device": "0" if torch.cuda.is_available() else "cpu",
-            "exist_ok": True
+            "exist_ok": True,
+            "patience": 20,
         }
         
-        # Progress dialog
-        progress = QProgressDialog("Training segmentation model...", "Cancel", 0, train_config["epochs"], self)
+        # Show progress dialog
+        progress = QProgressDialog("Training segmentation model...", "Cancel", 
+                                0, train_config["epochs"], self)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
         progress.show()
         
+        # Start training in separate thread
         self.train_seg_thread = TrainSegmentationThread(train_config)
         self.train_seg_thread.epoch_progress.connect(progress.setValue)
         self.train_seg_thread.finished.connect(lambda: self.on_seg_training_finished(progress))
@@ -3460,7 +3616,6 @@ class VideoAnnotator(QMainWindow):
             QMessageBox.critical(self, "Training Failed", self.train_seg_thread.error)
 
     def closeEvent(self, event):
-        """Safely stop all threads before closing"""
         # Stop SAM2 thread
         if hasattr(self, 'sam2_thread') and self.sam2_thread is not None:
             self.sam2_thread.stop()

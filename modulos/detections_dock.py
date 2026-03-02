@@ -10,7 +10,6 @@ from .translations import TEXTS
 
 
 class DetectionsDockWidget(QDockWidget):
-    """Class for detection history with integrated filters"""
     def __init__(self, main_window):
         super().__init__(main_window.texts["history"], main_window)
         self.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | 
@@ -212,7 +211,6 @@ class DetectionsDockWidget(QDockWidget):
         return list(best_detections.values())
 
     def apply_filters(self):
-        """Apply filters showing only the best detection by ID and sort by timestamp"""
         
         scroll_position = self.detections_list.verticalScrollBar().value()
         current_row = self.detections_list.currentRow()
