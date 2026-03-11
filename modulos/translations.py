@@ -202,8 +202,8 @@ TEXTS = {
                               "Detalhes técnicos:{}"
         ),
         "load_annotations_error": "Falha ao carregar anotações:\n{}",
+        "annotations_loaded": " Anotações carregadas do CSV: {}",
         "load_annotations_status_error": "Erro ao carregar anotações: {}",
-        "debug_load_annotations_error": "Erro ao carregar anotações: {}",
         "frame_error": "Erro ao exibir frame: {}",
         "debug_fatal_update_frame": "Erro fatal no update_frame: {}",
         "model_not_found": "Arquivo não encontrado: {}",
@@ -462,8 +462,8 @@ TEXTS = {
                               "Technical details:{}"
         ),
         "load_annotations_error": "Failed to load annotations:\n{}",
+        "annotations_loaded": "Loaded annotations from CSV: {}",
         "load_annotations_status_error": "Error loading annotations: {}",
-        "debug_load_annotations_error": "Error loading annotations: {}",
         "frame_error": "Error displaying frame: {}",
         "debug_fatal_update_frame": "Fatal error in update_frame: {}",
         "model_not_found": "File not found: {}",

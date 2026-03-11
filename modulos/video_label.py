@@ -1,4 +1,5 @@
 import cv2
+import uuid
 from PyQt6.QtCore import Qt, QPointF, QRect
 from PyQt6.QtGui import QPainter, QPen, QColor
 from PyQt6.QtWidgets import QLabel, QSizePolicy
@@ -90,52 +91,29 @@ class VideoLabel(QLabel):
         if event.button() == Qt.MouseButton.LeftButton:
             main_win = self.window()
             
-            # SAM 2 mode active
+            # Check if clicking delete button on any annotation
+            for ann in self.active_annotations:
+                if ann.get("delete_rect") and ann["delete_rect"].contains(pos):
+                    self.remove_annotation(ann)
+                    return  # Delete takes priority
+            
             if hasattr(main_win, 'sam2_refinement_mode') and main_win.sam2_refinement_mode:
-                frame_coords = self.get_frame_coordinates(pos)
-                if frame_coords:
-                    x, y = frame_coords
-                    
-                    # Check if click is inside the SAM refinement bbox
-                    if hasattr(main_win, 'current_bb_for_refinement') and main_win.current_bb_for_refinement:
-                        bb = main_win.current_bb_for_refinement
-                        if bb["x1"] <= x <= bb["x2"] and bb["y1"] <= y <= bb["y2"]:
-                            # Click INSIDE → process SAM 2
-                            if hasattr(main_win, 'sam2_thread'):
-                                prompts = [(x, y, 1)]
-                                frame = self._get_frame_for_sam(main_win)
-                                if frame is not None:
-                                    main_win.sam2_thread.set_frame_and_prompts(
-                                        frame, main_win.current_frame_num, prompts
-                                    )
-                                    return  # Block drawing new bbox
-                        else:
-                            # Click OUTSIDE → auto-disable SAM 2
-                            main_win.toggle_sam2_refinement()
-                            # Continue to draw new bbox below
-                    else:
-                        # No bbox stored → auto-disable SAM 2
-                        main_win.toggle_sam2_refinement()
-                        # Continue to draw new bbox
+                # Any click while SAM is active disables it
+                main_win.toggle_sam2_refinement()
+                # Don't return here - allow drawing new bbox after disabling SAM
             
-            if event.button() == Qt.MouseButton.LeftButton:
-                for ann in self.active_annotations:
-                    if ann.get("delete_rect") and ann["delete_rect"].contains(pos):
-                        self.remove_annotation(ann)
-                        return       
-
-            if event.button() == Qt.MouseButton.LeftButton:
-                adjusted_pos = pos - video_rect.topLeft()
-                video_size   = video_rect.size()
-                self.start_point = QPointF(adjusted_pos.x() / video_size.width(),
-                                        adjusted_pos.y() / video_size.height())
-                self.end_point = self.start_point
-                self.drawing   = True
-                self.update()
-                return
-            
-            if event.button() == Qt.MouseButton.RightButton:
-                self.delete_annotation_at(pos, video_rect) 
+            # THIRD: Start drawing new bbox
+            adjusted_pos = pos - video_rect.topLeft()
+            video_size = video_rect.size()
+            self.start_point = QPointF(adjusted_pos.x() / video_size.width(),
+                                    adjusted_pos.y() / video_size.height())
+            self.end_point = self.start_point
+            self.drawing = True
+            self.update()
+            return
+                
+        if event.button() == Qt.MouseButton.RightButton:
+            self.delete_annotation_at(pos, video_rect)
 
     def _get_frame_for_sam(self, main_win):
         if hasattr(main_win, 'current_frame') and main_win.current_frame is not None:
@@ -219,7 +197,8 @@ class VideoLabel(QLabel):
                     "coordinates_type": "pixels",
                     "frame_dimensions": f"{original_width}x{original_height}",
                     "video_path": main_window.video_path or "Live",
-                    "frame_source": (main_window.video_path or "Live", main_window.current_frame_num)
+                    "frame_source": (main_window.video_path or "Live", main_window.current_frame_num),
+                    "bbox_id": str(uuid.uuid4())[:8] 
                 }
                 
                 if main_window.training_wizard is not None:
@@ -251,19 +230,46 @@ class VideoLabel(QLabel):
         
     def remove_annotation(self, ann):
         frame = ann["frame_number"]
+        bbox_id = ann.get("bbox_id") 
 
-        if ann in self.active_annotations:
-            self.active_annotations.remove(ann)
+        for i, a in enumerate(self.active_annotations):
+            if a is ann:  # Use identity comparison (is) instead of equality (==)
+                self.active_annotations.pop(i)
+                break
 
+        # Safer removal from frame_annotations
         if frame in self.frame_annotations:
-            try:
-                self.frame_annotations[frame].remove(ann)
-            except ValueError:
-                pass
-            if not self.frame_annotations[frame]:   
+            frame_anns = self.frame_annotations[frame]
+            for i, a in enumerate(frame_anns):
+                if a is ann:
+                    frame_anns.pop(i)
+                    break
+            if not frame_anns:   
                 del self.frame_annotations[frame]
 
         main_window = self.window()
+
+        if bbox_id and hasattr(main_window, 'segmentation_annotations'):
+            # Find indices of segmentations to remove (can't use remove() due to numpy arrays)
+            indices_to_remove = []
+            for i, seg in enumerate(main_window.segmentation_annotations):
+                if seg.get("source_bbox_id") == bbox_id and seg.get("frame_number") == frame:
+                    indices_to_remove.append(i)
+            
+            # Remove in reverse order to maintain correct indices
+            for i in reversed(indices_to_remove):
+                seg = main_window.segmentation_annotations.pop(i)
+                # Also remove from detections dock if present
+                if hasattr(main_window.detections_dock, 'remove_detection'):
+                    main_window.detections_dock.remove_detection(seg)
+            
+            # Redraw frame to remove masks
+            if indices_to_remove and hasattr(main_window, 'redraw_frame_with_all_masks'):
+                # Get fresh frame
+                frame_img = main_window._get_frame_for_sam()
+                if frame_img is not None:
+                    main_window.redraw_frame_with_all_masks(frame_img, frame)
+
         if hasattr(main_window, 'remove_annotation_from_history'):
             main_window.remove_annotation_from_history(ann)
         elif hasattr(main_window, 'detections_dock') and \

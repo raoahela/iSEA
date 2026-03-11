@@ -380,9 +380,11 @@ class DetectionsDockWidget(QDockWidget):
                 break
             
     def remove_detection(self, detection):
-        if detection in self.all_detections:
-            self.all_detections.remove(detection)
-            self.apply_filters() 
+        for i, d in enumerate(self.all_detections):
+            if d is detection:
+                self.all_detections.pop(i)
+                self.apply_filters()
+                return 
             
     def set_dark_mode(self, enable=True):
         if enable:

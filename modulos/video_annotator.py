@@ -2742,61 +2742,81 @@ class VideoAnnotator(QMainWindow):
             QMessageBox.critical(self, "Error", f"Export failed: {str(e)}")
 
     def load_annotations(self, file_path):
+        #validate file extension
         try:
-            with open(file_path, 'r') as f:
-                data = json.load(f)
+            if not file_path.endswith('.csv'):
+                raise ValueError(f"Unsupported format. Use .csv files only (got: {os.path.splitext(file_path)[1]})")
+            
+            # Check file exists and not empty
+            if not os.path.exists(file_path):
+                raise FileNotFoundError(f"Annotation file not found: {file_path}")
+            
+            if os.path.getsize(file_path) == 0:
+                raise ValueError("CSV file is empty")
+            
+            # Read CSV annotations
+            annotations_list = []
+            with open(file_path, 'r', encoding='utf-8', newline='') as f:
+                reader = csv.DictReader(f)
                 
-            # checks if it is a valid annotation file 
-            if 'frames' not in data:
-                raise ValueError(self.texts["invalid_annotations"])
+                # Validate required columns
+                required_cols = ['Frame_Number', 'Taxon', 'x1', 'y1', 'x2', 'y2', 'Type']
+                missing = [col for col in required_cols if col not in reader.fieldnames]
+                if missing:
+                    raise ValueError(f"Missing required CSV columns: {missing}")
                 
-            # clears existing annotations 
+                for row in reader:
+                    annotation = {
+                        'frame': int(row['Frame_Number']),
+                        'timestamp': row.get('Timestamp', ''),
+                        'class': row['Taxon'],
+                        'confidence': float(row.get('Confidence', 1.0)),
+                        'type': row['Type'],  # 'auto' or 'manual'
+                        'track_id': row.get('Track_ID', ''),
+                        'bbox': [
+                            int(row['x1']), 
+                            int(row['y1']), 
+                            int(row['x2']), 
+                            int(row['y2'])
+                        ],
+                        'photo_path': row.get('Photo', '')
+                    }
+                    annotations_list.append(annotation)
+            
+            # Clear existing annotations
             self.annotations = []
             self.video_label.manual_annotations = []
             self.detections_dock.all_detections = []
             self.detections_dock.detections_list.clear()
             
-            # loads custom classes
-            if 'custom_classes' in data:
-                self.custom_classes = data['custom_classes']
+            # Split into auto vs manual annotations
+            for ann in annotations_list:
+                if ann['type'] == 'manual':
+                    self.video_label.manual_annotations.append(ann)
+                else:
+                    self.annotations.append(ann)
                 
-            # loads annotations
-            for frame_data in data['frames']:
-                # Adds automated annotations
-                if 'auto_annotations' in frame_data:
-                    for ann in frame_data['auto_annotations']:
-                        self.annotations.append(ann)
-                        self.detections_dock.add_detection(ann)
-                
-                # Adds manual annotations
-                if 'manual_annotations' in frame_data:
-                    for ann in frame_data['manual_annotations']:
-                        self.video_label.manual_annotations.append(ann)
-                        self.detections_dock.add_detection(ann)
+                self.detections_dock.add_detection(ann)
             
-            # updates model informations 
-            if 'model_used' in data:
-                self.model_path = data['model_used']
-                self.set_status_message("annotations_loaded_with_model",
-                                        os.path.basename(file_path),
-                                        self.model_path)
-            else:
-                self.set_status_message("annotations_loaded",
-                                        os.path.basename(file_path))
-                
-            # updates class filter 
+            # Extract unique classes
+            self.custom_classes = list(set(a['class'] for a in annotations_list))
+            
+            # Update status
+            self.set_status_message("annotations_loaded",
+                                    os.path.basename(file_path))
+            
+            # Update class filter
             self.detections_dock.update_class_filter()
             
-            # If a video is loaded, display the annotations on the current frame
+            # Refresh display if video is open
             if self.cap is not None and self.cap.isOpened():
                 self.display_frame(self.video_label._pixmap)
                 
             self.detections_dock.apply_filters()
-                
+            
         except Exception as e:
             self.show_error_message("error", "load_annotations_error", str(e))
             self.set_status_message("load_annotations_status_error", str(e))
-            print(self.texts["debug_load_annotations_error"].format(traceback.format_exc()))
 
     def save_current_frame_with_annotations(self):
         # Make sure we have something on screen
@@ -2922,11 +2942,35 @@ class VideoAnnotator(QMainWindow):
         if not hasattr(self, 'all_detections'):
             self.all_detections = []
         
-        annotation["frame_number"] = self.current_frame_num
-        annotation["frame"] = self.capture_current_frame()
+        # Avoid duplicates
+        is_duplicate = False
+        for existing in self.all_detections:
+            if (existing.get("x1") == annotation.get("x1") and 
+                existing.get("y1") == annotation.get("y1") and
+                existing.get("x2") == annotation.get("x2") and
+                existing.get("y2") == annotation.get("y2") and
+                existing.get("frame_number") == annotation.get("frame_number") and
+                existing.get("class") == annotation.get("class")):
+                is_duplicate = True
+                break
         
-        self.all_detections.append(annotation)
+        if not is_duplicate:
+            self.all_detections.append(annotation)
+        
+        # Add to detections dock
         self.detections_dock.add_detection(annotation)
+        
+        # Refresh display to show all annotations including the new one
+        # This ensures previous annotations from same frame remain visible
+        self.refresh_frame_display()
+
+    def refresh_frame_display(self):
+        # Update video_label's active annotations for current frame
+        self.video_label.current_frame_num = self.current_frame_num
+        self.video_label.update_active_annotations()
+        
+        # Force repaint
+        self.video_label.update()
 
     def robust_read_csv(self, file_path):
         import pandas as pd
@@ -3104,17 +3148,31 @@ class VideoAnnotator(QMainWindow):
             return
 
         self.dataset_index = index
-        image_path = self.dataset_frames[index][0]
-
+        image_path, original_num, dataset_idx = self.dataset_frames[index]
+        
+        # Load image
         frame = cv2.imread(image_path)
         if frame is None:
             self.status_label.setText("Error loading image: " + str(image_path))
             return
-
-        self.current_frame = frame.copy()  # Store for SAM processing
         
+        self.current_frame = frame.copy()
         self.current_frame_num = index
+        
+        # Update video_label dimensions
+        h, w = frame.shape[:2]
+        self.video_label.original_width = w
+        self.video_label.original_height = h
+        
+        # Load all annotations for this frame into video_label
+        self.video_label.frame_annotations[index] = self.video_label.frame_annotations.get(index, [])
+        self.video_label.current_frame_num = index
+        self.video_label.update_active_annotations()
+        
+        # Display frame (annotations will be drawn by video_label's paintEvent)
         self.display_frame(frame)
+        
+        # Update UI
         self.update_time_labels()
         self.video_name_label.setText(f"[Dataset] {Path(image_path).name}")
 
@@ -3133,25 +3191,24 @@ class VideoAnnotator(QMainWindow):
             if mask_data and mask_data["segmentation"] is not None:
                 mask = mask_data["segmentation"]
                 
-                # Extract polygon contours from binary mask
-                contours = measure.find_contours(mask, 0.5)  # Threshold at 0.5
+                # Extract polygon contours
+                from skimage import measure
+                contours = measure.find_contours(mask, 0.5)
                 if not contours:
-                    self.status_label.setText("No valid contours found in mask")
+                    self.status_label.setText("No valid contours found")
                     return
                 
-                # Use largest contour (main object)
                 main_contour = max(contours, key=lambda c: len(c))
                 
-                # Normalize coordinates to 0-1 range for YOLO format
-                # Note: find_contours returns (row, col) = (y, x)
+                # Normalize coordinates
                 h, w = mask.shape[:2]
-                normalized_coords = []
-                for y, x in main_contour:
-                    # Convert to x,y and normalize
-                    nx = float(x) / w
-                    ny = float(y) / h
-                    normalized_coords.append((nx, ny))
+                normalized_coords = [(float(y)/h, float(x)/w) for x, y in main_contour]
                 
+                # Get source bbox_id if available
+                source_bbox_id = None
+                if hasattr(self, 'current_bb_for_refinement') and self.current_bb_for_refinement:
+                    source_bbox_id = self.current_bb_for_refinement.get("bbox_id")
+
                 # Create segmentation annotation
                 seg_annotation = {
                     "type": "segmentation",
@@ -3160,58 +3217,78 @@ class VideoAnnotator(QMainWindow):
                     "frame_number": frame_num,
                     "timestamp": self.get_video_timestamp(frame_num),
                     "video_path": self.video_path or "Live",
-                    "polygon": normalized_coords,  # Normalized (x,y) pairs
+                    "mask": mask,  # Store binary mask
+                    "polygon": normalized_coords,
                     "frame_source": (self.video_path, frame_num),
-                    "frame_dimensions": f"{w}x{h}"
+                    "frame_dimensions": f"{w}x{h}",
+                    "source_bbox_id": source_bbox_id
                 }
                 
-                # Store in segmentation annotations list
+                # Store in segmentation list
                 if not hasattr(self, 'segmentation_annotations'):
                     self.segmentation_annotations = []
                 self.segmentation_annotations.append(seg_annotation)
                 
-                # Add to detections dock for visualization
+                # Add to detections dock
                 self.detections_dock.add_detection(seg_annotation)
                 
-                self.status_label.setText(
-                    f"Segmentation created: {len(normalized_coords)} points, "
-                    f"class: {self.video_label.current_class}"
-                )
+                # IMPORTANT: Redraw frame with ALL masks (preserving previous ones)
+                self.redraw_frame_with_all_masks(original_frame, frame_num)
                 
-                # Redraw frame with mask overlay
-                self.redraw_frame_with_mask(mask_data, original_frame)
+                self.status_label.setText(f"Segmentation created: {len(normalized_coords)} points")
                 
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             self.on_sam2_error(str(e))
 
     def on_sam2_error(self, error_msg):
         self.status_label.setText(self.texts["sam2_error"].format(error_msg))
 
-    def redraw_frame_with_mask(self, mask_data, original_frame):
-        try:
-            mask = mask_data["segmentation"]
-            if mask is None or mask.shape[:2] != original_frame.shape[:2]:
-                return
-                
-            # Cria overlay colorido para a máscara
-            overlay = original_frame.copy()
-            overlay[mask > 0.5] = [0, 255, 0]  # Máscara verde
-            
-            # Mistura original com overlay
-            alpha = 0.4
-            blended = cv2.addWeighted(original_frame, 1-alpha, overlay, alpha, 0)
-            
-            # IMPORTANTE: Mantém a bounding box original visível
-            if hasattr(self, 'current_bb_for_refinement') and self.current_bb_for_refinement:
-                bb = self.current_bb_for_refinement
-                # Desenha bbox em azul para mostrar que está sendo refinada
-                cv2.rectangle(blended, (bb["x1"], bb["y1"]), (bb["x2"], bb["y2"]), 
-                            (255, 0, 0), 2)  # Bbox azul
-            
-            self.display_frame(blended)
-            
-        except Exception as e:
-            print(f"Error drawing mask: {e}")
+    def redraw_frame_with_all_masks(self, original_frame, frame_num):
+        # Start with original frame
+        frame = original_frame.copy()
+        
+        # Get all segmentations for current frame
+        if hasattr(self, 'segmentation_annotations'):
+            for seg_ann in self.segmentation_annotations:
+                if seg_ann.get("frame_number") == frame_num:
+                    # Draw this mask on frame
+                    mask = seg_ann.get("mask")
+                    if mask is not None:
+                        self._apply_mask_to_frame(frame, mask, seg_ann)
+        
+        # Draw bbox if in refinement mode
+        if hasattr(self, 'current_bb_for_refinement') and self.current_bb_for_refinement:
+            bb = self.current_bb_for_refinement
+            cv2.rectangle(frame, (bb["x1"], bb["y1"]), (bb["x2"], bb["y2"]), 
+                        (255, 0, 0), 2)
+        
+        # Cache current annotations before display_frame clears them
+        cached_annotations = self.video_label.frame_annotations.get(frame_num, []).copy()
+        
+        # Display the frame with all masks
+        self.display_frame(frame)
+
+        # Restore annotations to video_label
+        self.video_label.active_annotations = cached_annotations
+        self.video_label.update()
+
+    def _apply_mask_to_frame(self, frame, mask, seg_ann):
+        # Get color for class
+        class_name = seg_ann.get("class", "unknown")
+        hue = hash(class_name) % 360
+        import colorsys
+        rgb = colorsys.hsv_to_rgb(hue/360, 0.8, 0.9)
+        color = (int(rgb[2]*255), int(rgb[1]*255), int(rgb[0]*255))  # BGR for OpenCV
+        
+        # Create overlay
+        overlay = frame.copy()
+        overlay[mask > 0.5] = color
+        
+        # Blend
+        alpha = 0.4
+        cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
 
     def toggle_sam2_refinement(self):
         if not self.sam2_refinement_mode:
@@ -3222,7 +3299,7 @@ class VideoAnnotator(QMainWindow):
             # Store current bbox for refinement
             self.current_bb_for_refinement = self.video_label.active_annotations[-1]
             
-            # **CRITICAL: Get frame for SAM - works in both modes **
+            # Get frame for SAM 
             sam_frame = self._get_frame_for_sam()
             if sam_frame is None:
                 self.status_label.setText("No frame available for SAM processing")
@@ -3232,23 +3309,32 @@ class VideoAnnotator(QMainWindow):
         self.sam2_refinement_mode = not self.sam2_refinement_mode
         
         if self.sam2_refinement_mode:
-            # **Activate SAM **
+            # Activate SAM 
             self.sam2_refinement_btn.setStyleSheet("background-color: #ff9500; color: white; font-weight: bold;")
             self.set_status_message("sam2_refinement_on")
             
-            # ** Create points from bbox for SAM **
+            # Create box for SAM - format as list of lists [[x1, y1, x2, y2]]
             bb = self.current_bb_for_refinement
-            sam_box = np.array([[bb["x1"], bb["y1"], bb["x2"], bb["y2"]]], dtype=np.float32)
+            # SAM expects bboxes as [[x1, y1, x2, y2]] format
+            box_prompt = [[bb["x1"], bb["y1"], bb["x2"], bb["y2"]]]
             
-            # ** Send to SAM thread **
             sam_frame = self._get_frame_for_sam()
             if sam_frame is not None:
-                self.sam2_thread.set_frame_and_prompts(sam_frame, self.current_frame_num, sam_box)
+                # Pass bboxes as the prompts argument
+                self.sam2_thread.set_frame_and_prompts(
+                    sam_frame, 
+                    self.current_frame_num, 
+                    box_prompt  # This is the 'prompts' parameter which will be used as bboxes
+                )
         else:
             # Deactivate SAM
             self.current_bb_for_refinement = None
             self.sam2_refinement_btn.setStyleSheet("")
             self.set_status_message("sam2_refinement_off")
+
+            sam_frame = self._get_frame_for_sam()
+            if sam_frame is not None:
+                self.redraw_frame_with_all_masks(sam_frame, self.current_frame_num)
 
 
     def _get_frame_for_sam(self):
