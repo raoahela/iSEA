@@ -8,7 +8,9 @@ import pandas as pd
 import traceback
 from datetime import datetime, timedelta
 import csv
-import time
+from datetime import datetime
+import platform
+import getpass
 import torch
 import numpy as np
 from collections import defaultdict
@@ -701,6 +703,19 @@ class VideoAnnotator(QMainWindow):
             
             if self.paused:
                 self.toggle_play_pause()
+
+    def get_system_timestamp(self):
+        """Retorna timestamp completo do sistema para anotações"""
+        now = datetime.now()
+        return {
+            'system_datetime': now.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],  # Data/hora local
+            'system_date': now.strftime("%Y-%m-%d"),
+            'system_time': now.strftime("%H:%M:%S.%f")[:-3],
+            'system_timezone': datetime.now().astimezone().tzname(),  # Fuso horário
+            'computer_name': platform.node(),  # Nome do PC
+            'user': getpass.getuser(),  # Usuário logado
+            'os': f"{platform.system()} {platform.release()}"  # Sistema operacional
+        }
             
     def start_recording(self):
         if not self.live_mode or self.cap is None or not self.cap.isOpened():
@@ -709,9 +724,12 @@ class VideoAnnotator(QMainWindow):
         # vid configurations
         frame_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         frame_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        
+        # Use a conservative FPS based on timer interval (30ms = ~33 fps)
+        # or use actual camera FPS if available
         fps = self.cap.get(cv2.CAP_PROP_FPS)
-        if fps <= 0:
-            fps = 30  # default value
+        if fps <= 0 or fps > 30:
+            fps = 20  # Conservative default for live mode with processing
         
         # creates a file name with timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -733,7 +751,7 @@ class VideoAnnotator(QMainWindow):
         self.recording = True
         self.record_start_frame = self.current_frame_num
         self.recorded_detections = []
-        self.status_label.setText(self.texts["recording_started"].format(self.recording_filename))
+        self.recording_start_time = datetime.now()  # Add this to track actual time
 
     def stop_recording(self):
         if not self.recording:
@@ -769,12 +787,10 @@ class VideoAnnotator(QMainWindow):
             self.status_label.setText(self.texts["no_recording_to_save"])
             return
             
-        options = QFileDialog.Option()
         file_path, _ = QFileDialog.getSaveFileName(
             self, self.texts["save_recording_title"], 
             self.recording_filename,
-            "Vídeos (*.avi *.mp4);;Todos os arquivos (*)", 
-            options=options)
+            "Vídeos (*.avi *.mp4);;Todos os arquivos (*)")
             
         if file_path:
             try:
@@ -782,17 +798,47 @@ class VideoAnnotator(QMainWindow):
                 shutil.move(self.recording_filename, file_path)
                 self.status_label.setText(self.texts["video_saved"].format(file_path))
                 
-                # saves the corresponding video annotations
-                annotation_path = os.path.splitext(file_path)[0] + "_annotations.json"
-                with open(annotation_path, 'w') as f:
-                    json.dump({
-                        "video_file": os.path.basename(file_path),
-                        "detections": self.recorded_detections
-                    }, f, indent=4)
+                # Save annotations as CSV (same format as save_annotations)
+                annotation_path = os.path.splitext(file_path)[0] + "_annotations.csv"
+                
+                # Prepare CSV data
+                import csv
+                export_data = []
+                for ann in self.recorded_detections:
+                    video_name = os.path.basename(file_path)
+                    confidence = ann.get('confidence', 0)
+                    confidence_str = f"{confidence:.2f}" if isinstance(confidence, (int, float)) else str(confidence)
+                    
+                    export_data.append({
+                        "Video": video_name,
+                        "Timestamp": ann.get("timestamp", ""),
+                        "System_Date": ann.get("system_date", ""),
+                        "System_Time": ann.get("system_time", ""),
+                        "Taxon": ann.get("class", "Unknown"),
+                        "Confidence": confidence_str,
+                        "Type": ann.get("type", "unknown"),
+                        "Track_ID": ann.get("track_id", ""),
+                        "x1": ann.get("x1", ""),
+                        "y1": ann.get("y1", ""),
+                        "x2": ann.get("x2", ""),
+                        "y2": ann.get("y2", ""),
+                        "Frame_Number": ann.get("frame_number", ""),
+                        "Photo": ann.get("frame_path", "")
+                    })
+                
+                # Write CSV
+                with open(annotation_path, 'w', newline='', encoding='utf-8') as csvfile:
+                    fieldnames = ["Video", "Timestamp", "System_Date", "System_Time",
+                                "Taxon", "Confidence", "Type", "Track_ID",
+                                "x1", "y1", "x2", "y2", "Frame_Number", "Photo"]
+                    writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                    writer.writeheader()
+                    writer.writerows(export_data)
                     
                 self.status_label.setText(self.texts["video_annotations_saved"].format(os.path.dirname(file_path)))
+                
             except Exception as e:
-                self.status_label.setText(self.texts["saving_video_error"].format({str(e)}))
+                self.status_label.setText(self.texts["saving_video_error"].format(str(e)))
 
     def list_available_cameras(self):
         cameras = []
@@ -1056,6 +1102,7 @@ class VideoAnnotator(QMainWindow):
                             label = self.model.names[cls_id]
                             track_id = int(box.id) if box.id is not None else None
                                 
+                            system_info = self.get_system_timestamp()
                             detection = {
                                 "x1": x1, "y1": y1, "x2": x2, "y2": y2,
                                 "label": label, 
@@ -1063,9 +1110,16 @@ class VideoAnnotator(QMainWindow):
                                 "type": "auto", 
                                 "class": label,
                                 "timestamp": self.get_video_timestamp(self.current_frame_num),
+                                "system_datetime": system_info['system_datetime'],  # NOVO
+                                "system_date": system_info['system_date'],  # NOVO
+                                "system_time": system_info['system_time'],  # NOVO
+                                "system_timezone": system_info['system_timezone'],  # NOVO
+                                "computer_name": system_info['computer_name'],  # NOVO
+                                "user": system_info['user'],  # NOVO
+                                "os": system_info['os'],  # NOVO
                                 "track_id": track_id,
                                 "frame_number": self.current_frame_num,
-                                "video_path": self.video_path,
+                                "video_path": self.video_path or "Live",
                                 "frame_dimensions": f"{frame_copy.shape[1]}x{frame_copy.shape[0]}",
                                 "frame_source": (self.video_path or "Live", self.current_frame_num) 
                             }
@@ -1232,6 +1286,7 @@ class VideoAnnotator(QMainWindow):
                         
                     detection_frame = self.capture_current_frame()
                     
+                    system_info = self.get_system_timestamp()
                     detection = {
                         "x1": x1, "y1": y1, "x2": x2, "y2": y2,
                         "label": label, 
@@ -1239,9 +1294,16 @@ class VideoAnnotator(QMainWindow):
                         "type": "auto", 
                         "class": label,
                         "timestamp": self.get_video_timestamp(self.current_frame_num),
+                        "system_datetime": system_info['system_datetime'],  # NOVO
+                        "system_date": system_info['system_date'],  # NOVO
+                        "system_time": system_info['system_time'],  # NOVO
+                        "system_timezone": system_info['system_timezone'],  # NOVO
+                        "computer_name": system_info['computer_name'],  # NOVO
+                        "user": system_info['user'],  # NOVO
+                        "os": system_info['os'],  # NOVO
                         "track_id": track_id,
                         "frame_number": self.current_frame_num,
-                        "video_path": self.video_path,
+                        "video_path": self.video_path or "Live",
                         "frame": detection_frame,
                         "frame_dimensions": f"{frame_copy.shape[1]}x{frame_copy.shape[0]}",
                         "frame_source": (self.video_path or "Live", self.current_frame_num) 
@@ -1273,6 +1335,7 @@ class VideoAnnotator(QMainWindow):
                 label = self.model.names[cls_id]
                 track_id = int(box.id) if box.id is not None else None
                 
+                system_info = self.get_system_timestamp()
                 detection = {
                     "x1": x1, "y1": y1, "x2": x2, "y2": y2,
                     "label": label,
@@ -1280,9 +1343,16 @@ class VideoAnnotator(QMainWindow):
                     "type": "auto",
                     "class": label,
                     "timestamp": self.get_video_timestamp(frame_num),
+                    "system_datetime": system_info['system_datetime'],  # NOVO
+                    "system_date": system_info['system_date'],  # NOVO
+                    "system_time": system_info['system_time'],  # NOVO
+                    "system_timezone": system_info['system_timezone'],  # NOVO
+                    "computer_name": system_info['computer_name'],  # NOVO
+                    "user": system_info['user'],  # NOVO
+                    "os": system_info['os'],  # NOVO
                     "track_id": track_id,
                     "frame_number": frame_num,
-                    "video_path": self.video_path,
+                    "video_path": self.video_path or "Live",
                     "frame_dimensions": f"{used_frame.shape[1]}x{used_frame.shape[0]}",
                     "frame_source": (self.video_path, frame_num)
                 }
@@ -1361,15 +1431,19 @@ class VideoAnnotator(QMainWindow):
                 
 
     def enable_manual_annotation(self):
-        self.paused = True
-        is_dark = self.palette().color(QPalette.ColorRole.Window).lightness() < 128 
-        
-        if is_dark:
-            self._play_action.setIcon(self.recolor_icon(QStyle.StandardPixmap.SP_MediaPlay))
+        if not self.live_mode:
+            self.paused = True
+            is_dark = self.palette().color(QPalette.ColorRole.Window).lightness() < 128 
+            
+            if is_dark:
+                self._play_action.setIcon(self.recolor_icon(QStyle.StandardPixmap.SP_MediaPlay))
+            else: 
+                self._play_action.setIcon(self.play_icon)
+            self._play_action.setText(self.texts["play"])
+            self.timer.stop()
         else: 
-            self._play_action.setIcon(self.play_icon)
-        self._play_action.setText(self.texts["play"])
-        self.timer.stop()
+             # In live mode, just update the icon without pausing
+            is_dark = self.palette().color(QPalette.ColorRole.Window).lightness() < 128
 
         # Toggle manual annotation mode
         self.video_label.drawing_enabled = not self.video_label.drawing_enabled
@@ -2102,7 +2176,7 @@ class VideoAnnotator(QMainWindow):
                                 y2 = int((y_center + height/2) * h)
                                 
                                 class_name = classes[class_id] if class_id < len(classes) else f"class_{class_id}"
-                                
+                                system_info = self.get_system_timestamp()
                                 annotation = {
                                     "x1": x1, "y1": y1, "x2": x2, "y2": y2,
                                     "label": class_name,
@@ -2112,6 +2186,8 @@ class VideoAnnotator(QMainWindow):
                                     "frame_number": dataset_idx,
                                     "video_path": str(img_path),
                                     "timestamp": "00:00:00",
+                                    "system_date": system_info['system_date'],  
+                                    "system_time": system_info['system_time'],
                                     "frame_source": (str(img_path), dataset_idx),
                                     "frame_dimensions": f"{w}x{h}"
                                 }
@@ -2708,6 +2784,8 @@ class VideoAnnotator(QMainWindow):
                 export_data.append({
                     "Video": video_name, 
                     "Timestamp": ann.get("timestamp", ""),
+                    "System_Date": ann.get("system_date", ""),
+                    "System_Time": ann.get("system_time", ""),
                     "Taxon": ann.get("class", "Unknown"),
                     "Confidence": confidence_str,
                     "Type": ann.get("type", "unknown"),
@@ -2722,8 +2800,9 @@ class VideoAnnotator(QMainWindow):
 
             # 10. Save CSV file
             with open(output_path, 'w', newline='', encoding='utf-8') as csvfile:
-                fieldnames = ["Video", "Timestamp", "Taxon", "Confidence", "Type", "Track_ID",
-                            "x1", "y1", "x2", "y2", "Frame_Number", "Photo"]
+                fieldnames = ["Video", "Timestamp", "System_Date", "System_Time", 
+                             "Taxon", "Confidence", "Type", "Track_ID",
+                                "x1", "y1", "x2", "y2", "Frame_Number", "Photo"]
                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
                 writer.writeheader()
                 writer.writerows(export_data)
@@ -2942,6 +3021,10 @@ class VideoAnnotator(QMainWindow):
         if not hasattr(self, 'all_detections'):
             self.all_detections = []
         
+        if "system_date" not in annotation:
+            system_info = self.get_system_timestamp()
+            annotation["system_date"] = system_info['system_date']
+            annotation["system_time"] = system_info['system_time']
         # Avoid duplicates
         is_duplicate = False
         for existing in self.all_detections:

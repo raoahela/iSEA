@@ -1,6 +1,6 @@
 import cv2
 import uuid
-from PyQt6.QtCore import Qt, QPointF, QRect
+from PyQt6.QtCore import Qt, QPointF, QRect, QTimer
 from PyQt6.QtGui import QPainter, QPen, QColor
 from PyQt6.QtWidgets import QLabel, QSizePolicy
 
@@ -21,6 +21,9 @@ class VideoLabel(QLabel):
         #system of annotations per frame
         self.frame_annotations = {}  
         self.current_frame_num = 0
+
+        self.annotation_display_ms  = 1000  # 1  second
+        self.annotation_timers = {}  # bbox_id -> QTimer
         
         # mouse state
         self.mouse_state = "normal"  # normal, drawing, dragging, resizing
@@ -213,6 +216,10 @@ class VideoLabel(QLabel):
                 
                 # Add to active annotations for display
                 self.active_annotations.append(annotation)
+
+                bbox_id = annotation['bbox_id']
+                QTimer.singleShot(self.annotation_display_ms, 
+                                lambda: self.remove_annotation_by_id(bbox_id))
                 
                 # Show SAM button after first bbox is drawn
                 if hasattr(main_window, 'sam2_refinement_btn') and main_window.sam2_refinement_btn:
@@ -287,6 +294,23 @@ class VideoLabel(QLabel):
             if ann["x1"] <= x <= ann["x2"] and ann["y1"] <= y <= ann["y2"]:
                 self.remove_annotation(ann)
                 break
+
+    def remove_annotation_by_id(self, bbox_id: str):
+        # Remove de active_annotations
+        self.active_annotations = [
+            a for a in self.active_annotations 
+            if a.get('bbox_id') != bbox_id
+        ]
+        
+        # Remove de frame_annotations
+        frame = self.current_frame_num
+        if frame in self.frame_annotations:
+            self.frame_annotations[frame] = [
+                a for a in self.frame_annotations[frame]
+                if a.get('bbox_id') != bbox_id
+            ]
+        
+        self.update()
 
     def paintEvent(self, event):
         super().paintEvent(event)

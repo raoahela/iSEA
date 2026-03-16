@@ -180,11 +180,13 @@ class DetectionsDockWidget(QDockWidget):
             print("⚠️ Detecção inválida, ignorada")
             return
         
+        # Ensure video_path is never None (use "Live" as default)
+        if not detection.get("video_path"):
+            detection["video_path"] = "Live"
+        
         if detection.get("type") == "manual":
             detection.setdefault("track_id", f"manual_{len(self.all_detections)}")
             detection.setdefault("confidence", 1.0)
-            current_video_path = self.main.video_path if self.main.video_path else "Live"
-            detection["video_path"] = current_video_path
         
         self.all_detections.append(detection)
         self.apply_filters()
@@ -286,7 +288,6 @@ class DetectionsDockWidget(QDockWidget):
         return visible
 
     def add_detection_to_list(self, detection):
-
         item = QListWidgetItem()
         item.setData(Qt.ItemDataRole.UserRole, detection)
 
@@ -298,18 +299,18 @@ class DetectionsDockWidget(QDockWidget):
         # Detection text
         class_name = detection.get("class", "Desconhecido")
         confidence = detection.get("confidence", 0)
-        timestamp = detection.get("timestamp", "")
+        
+        # Check if we're in live mode (video_path is "Live")
+        detection_video_path = detection.get("video_path", "")
+        is_live = detection_video_path == "Live"
+        
+        # Use system date/time for live mode, regular timestamp for video mode
+        if is_live and detection.get("system_date") and detection.get("system_time"):
+            timestamp = f"{detection.get('system_date')} {detection.get('system_time')}"
+        else:
+            timestamp = detection.get("timestamp", "")
+        
         track_id = detection.get("track_id")
-
-        # Fix video_path = None issue in live mode
-        current_video_path = self.main.video_path if self.main.video_path else "Live"
-        detection_video_path = detection.get("video_path", "Desconhecido")
-        
-        if detection_video_path is None:
-            detection_video_path = "Live"
-        
-        current_video = os.path.basename(str(current_video_path))
-        video_name = os.path.basename(str(detection_video_path))
 
         # Assemble text
         text = f"{timestamp} - {class_name}" if timestamp else class_name
@@ -322,7 +323,6 @@ class DetectionsDockWidget(QDockWidget):
                 
         label = QLabel(text)
         label.setStyleSheet("font-size: 12px;")
-
 
         delete_btn = QPushButton()
         delete_btn.setToolTip(self.texts["delete_detection"])
@@ -352,7 +352,6 @@ class DetectionsDockWidget(QDockWidget):
         
         self.detections_list.addItem(item)
         self.detections_list.setItemWidget(item, widget)
-
 
     def delete_single_detection(self, button):
  
