@@ -44,6 +44,7 @@ TEXTS = {
         # Menu Anotação
         "annotation": "Anotação",
         "train_yolo": "Treinar Modelo YOLO",
+        "enrich_taxonomy": "Enriquecer Taxonomia (WoRMS)",
         
         # Menu Idioma
         "language": "Idioma",
@@ -302,6 +303,7 @@ TEXTS = {
         # Menu Anotação
         "annotation": "Annotation",
         "train_yolo": "Train YOLO Model",
+        "enrich_taxonomy": "Enrich Taxonomy (WoRMS)",
         
         # Menu Idioma
         "language": "Language",

@@ -13,8 +13,7 @@ import platform
 import getpass
 import torch
 import numpy as np
-from collections import defaultdict
-from skimage import measure  
+from collections import defaultdict 
 from ultralytics import YOLO
 from pathlib import Path
 import shutil
@@ -36,6 +35,7 @@ from .taxon_grid import TaxonGrid
 from .detection_thread import DetectionThread
 from .training_wizard import TrainingWizard
 from .sam2_thread import SAM2Thread
+from .taxonomy_enrichment import TaxonomyEnrichmentDialog
 
 def resource_path(relative_path):
     try:
@@ -534,6 +534,11 @@ class VideoAnnotator(QMainWindow):
         manual_action.setShortcut(QKeySequence("M"))
         manual_action.triggered.connect(self.enable_manual_annotation)
         annotation_menu.addAction(manual_action)
+
+        enrich_action = QAction(self.texts["enrich_taxonomy"], self)
+        enrich_action.setShortcut(QKeySequence("E"))
+        enrich_action.triggered.connect(self.open_enrichment_dialog)
+        annotation_menu.addAction(enrich_action)
 
         # training menu
         training_menu = menubar.addMenu(self.texts["train"])
@@ -3783,6 +3788,10 @@ class VideoAnnotator(QMainWindow):
             )
         else:
             QMessageBox.critical(self, "Training Failed", self.train_seg_thread.error)
+        
+    def open_enrichment_dialog(self):
+        dialog = TaxonomyEnrichmentDialog(self)
+        dialog.exec()
 
     def closeEvent(self, event):
         # Stop SAM2 thread
