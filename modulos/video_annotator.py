@@ -1963,17 +1963,15 @@ class VideoAnnotator(QMainWindow):
             return
         
         try:
-            images_dir = os.path.join(output_dir, "images")
-            labels_dir = os.path.join(output_dir, "labels")
-            train_dir_images = os.path.join(images_dir, "train")
-            val_dir_images = os.path.join(images_dir, "val")
-            train_dir_labels = os.path.join(labels_dir, "train")
-            val_dir_labels = os.path.join(labels_dir, "val")
+            # Create directory structure
+            images_dir = Path(output_dir) / "images"
+            labels_dir = Path(output_dir) / "labels"
             
-            os.makedirs(train_dir_images, exist_ok=True)
-            os.makedirs(val_dir_images, exist_ok=True)
-            os.makedirs(train_dir_labels, exist_ok=True)
-            os.makedirs(val_dir_labels, exist_ok=True)
+            # Create train/val subdirectories
+            (images_dir / "train").mkdir(parents=True, exist_ok=True)
+            (images_dir / "val").mkdir(parents=True, exist_ok=True)
+            (labels_dir / "train").mkdir(parents=True, exist_ok=True)
+            (labels_dir / "val").mkdir(parents=True, exist_ok=True)
             
             # Carrega classes existentes do dataset.yaml se já existir (para preservar IDs)
             yaml_path = os.path.join(output_dir, "dataset.yaml")
@@ -2022,7 +2020,6 @@ class VideoAnnotator(QMainWindow):
                 random.shuffle(all_indices)
                 
                 split_idx = int(0.8 * len(all_indices))
-                print(f"Índice de corte (80%): {split_idx}")
 
                 split_idx = int(0.8 * len(all_indices))
                 train_indices = set(all_indices[:split_idx])
@@ -3714,105 +3711,6 @@ class VideoAnnotator(QMainWindow):
 
         return None
 
-    
-    def export_yolo_segmentation_annotations(self, output_dir):
-        if not hasattr(self, 'segmentation_annotations') or not self.segmentation_annotations:
-            QMessageBox.warning(self, self.texts["warning"], "No segmentation annotations to export")
-            return
-        
-        try:
-            images_dir = Path(output_dir) / "images"
-            labels_dir = Path(output_dir) / "labels"
-            images_dir.mkdir(exist_ok=True)
-            labels_dir.mkdir(exist_ok=True)
-            
-            # Get unique classes
-            classes = sorted(list(set(
-                ann["class"] for ann in self.segmentation_annotations
-            )))
-            class_to_id = {name: idx for idx, name in enumerate(classes)}
-            
-            # Group by frame
-            frames_dict = defaultdict(list)
-            for ann in self.segmentation_annotations:
-                frame_num = ann.get("frame_number", 0)
-                frames_dict[frame_num].append(ann)
-            
-            progress = QProgressDialog("Exporting segmentation masks...", "Cancel", 0, len(frames_dict), self)
-            progress.show()
-            
-            for i, (frame_num, annotations) in enumerate(frames_dict.items()):
-                if progress.wasCanceled():
-                    break
-                
-                # Extract frame
-                frame = self._extract_frame(frame_num)
-                if frame is None:
-                    continue
-                
-                # Save image
-                img_name = f"frame_{frame_num:06d}.jpg"
-                img_path = images_dir / img_name
-                cv2.imwrite(str(img_path), frame)
-                
-                # Save label (segmentation format)
-                label_name = f"frame_{frame_num:06d}.txt"
-                label_path = labels_dir / label_name
-                
-                with open(label_path, 'w') as f:
-                    for ann in annotations:
-                        class_id = class_to_id[ann["class"]]
-                        coords = ann["polygon"]
-                        
-                        # YOLO format: class_id x1 y1 x2 y2 x3 y3 ...
-                        line = f"{class_id} " + " ".join([f"{x:.6f} {y:.6f}" for x, y in coords])
-                        f.write(line + "\n")
-                
-                progress.setValue(i)
-            
-            progress.close()
-            
-            # Create dataset.yaml
-            yaml_path = Path(output_dir) / "dataset.yaml"
-            with open(yaml_path, 'w') as f:
-                f.write(f"path: {output_dir}\n")
-                f.write("train: images\n")
-                f.write("val: images\n")  # Adjust for your split
-                f.write("names:\n")
-                for idx, name in enumerate(classes):
-                    f.write(f"  {idx}: {name}\n")
-            
-            QMessageBox.information(
-                self, 
-                "Export Complete", 
-                f"Segmentation dataset exported to:\n{output_dir}\n\n"
-                f"Classes: {len(classes)}\n"
-                f"Annotations: {len(self.segmentation_annotations)}"
-            )
-            
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Export failed: {str(e)}")
-            print(f"Export error: {traceback.format_exc()}")
-
-    def _extract_frame(self, frame_num):
-        """Helper to extract frame by number"""
-        if self.cap is None:
-            return None
-        
-        current_pos = self.cap.get(cv2.CAP_PROP_POS_FRAMES)
-        self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
-        ret, frame = self.cap.read()
-        self.cap.set(cv2.CAP_PROP_POS_FRAMES, current_pos)
-        
-        return frame if ret else None
-    
-    def export_segmentation_dialog(self):
-        output_dir = QFileDialog.getExistingDirectory(
-            self, "Select output folder for segmentation dataset"
-        )
-        if output_dir:
-            self.export_yolo_segmentation_annotations(output_dir)
-
     def export_yolo_segmentation_annotations(self, output_dir):
         # Check if we have segmentation annotations in memory
         if not hasattr(self, 'segmentation_annotations') or not self.segmentation_annotations:
@@ -3830,11 +3728,37 @@ class VideoAnnotator(QMainWindow):
             (labels_dir / "train").mkdir(parents=True, exist_ok=True)
             (labels_dir / "val").mkdir(parents=True, exist_ok=True)
             
-            # Get unique classes
-            classes = sorted(list(set(ann["class"] for ann in self.segmentation_annotations)))
-            class_to_id = {name: idx for idx, name in enumerate(classes)}
+            # Carrega classes existentes do dataset.yaml se já existir (para preservar IDs)
+            yaml_path = os.path.join(output_dir, "dataset.yaml")
+            existing_classes = {}  # {name: id}
+            if os.path.exists(yaml_path):
+                try:
+                    with open(yaml_path, 'r') as f:
+                        yaml_data = yaml.safe_load(f)
+                    if yaml_data and 'names' in yaml_data:
+                        names = yaml_data['names']
+                        if isinstance(names, dict):
+                            existing_classes = {str(name): int(idx) for idx, name in names.items()}
+                        elif isinstance(names, list):
+                            existing_classes = {str(name): idx for idx, name in enumerate(names)}
+                except Exception as e:
+                    print(f"Warning: Could not load existing dataset.yaml: {e}")
             
-            # Group annotations by frame number
+            # Mescla classes: mantém existentes e adiciona novas
+            new_classes = set(ann["class"] for ann in self.segmentation_annotations)
+            merged_classes = dict(existing_classes)  # Copia existentes
+            
+            # Adiciona novas classes com IDs sequenciais
+            next_id = max(merged_classes.values()) + 1 if merged_classes else 0
+            for cls in sorted(new_classes):
+                if cls not in merged_classes:
+                    merged_classes[cls] = next_id
+                    next_id += 1
+            
+            # Cria mapping final preservando IDs antigos
+            classes = sorted(merged_classes.keys())  # Lista ordenada para consistência
+            class_to_id = merged_classes  # Dict com IDs preservados
+            
             frames_dict = defaultdict(list)
             for ann in self.segmentation_annotations:
                 frame_num = ann.get("frame_number", 0)
@@ -3842,63 +3766,122 @@ class VideoAnnotator(QMainWindow):
             
             all_frames = sorted(frames_dict.keys())
             
-            # 80/20 train/val split
-            import random
-            random.shuffle(all_frames)
-            split_idx = int(0.8 * len(all_frames))
-            train_frames = set(all_frames[:split_idx])
-            val_frames = set(all_frames[split_idx:])
+            is_dataset_mode = self.dataset_mode and hasattr(self, 'dataset_frames') and self.dataset_frames
             
-            # Progress dialog
-            progress = QProgressDialog("Exporting segmentation masks...", "Cancel", 
-                                    0, len(frames_dict), self)
+            if is_dataset_mode:
+                random.seed(42)  
+                
+                all_indices = list(range(len(self.dataset_frames)))
+                random.shuffle(all_indices)
+                
+                split_idx = int(0.8 * len(all_indices))
+                print(f"Índice de corte (80%): {split_idx}")
+
+                split_idx = int(0.8 * len(all_indices))
+                train_indices = set(all_indices[:split_idx])
+                val_indices = set(all_indices[split_idx:])
+                
+            else:
+                # Random split for video mode
+                shuffled_frames = all_frames.copy()
+                random.shuffle(shuffled_frames)
+                split_idx = int(0.8 * len(shuffled_frames))
+                train_frames_set = set(shuffled_frames[:split_idx])
+                val_frames_set = set(shuffled_frames[split_idx:])
+                train_indices = train_frames_set
+                val_indices = val_frames_set
+            
+            # DETECTAR MAIOR ÍNDICE EXISTENTE para continuar sequência (sessões múltiplas)
+            existing_max_index = -1
+            for split in ['train', 'val']:
+                split_dir = Path(images_dir) / split
+                if split_dir.exists():
+                    for img_file in split_dir.glob('frame_*_*.jpg'):
+                        try:
+                            # Extrai número do padrão frame_XXXXXX_name.jpg
+                            parts = img_file.stem.split('_')
+                            if len(parts) >= 2:
+                                num = int(parts[1])
+                                existing_max_index = max(existing_max_index, num)
+                        except (IndexError, ValueError):
+                            continue
+            
+            # Offset para garantir unicidade entre sessões
+            index_offset = existing_max_index + 1
+            
+            progress = QProgressDialog(self.texts["exporting_frames"], self.texts["cancel"], 0, len(all_frames), self)
+            progress.setWindowTitle(self.texts["exporting_dataset"])
             progress.setWindowModality(Qt.WindowModality.WindowModal)
             progress.show()
             
-            exported_count = 0
+            processed_frames = 0
+            exported_count = 0  
+
+            video_name_prefix = ""
+            if not is_dataset_mode and self.video_path and self.video_path != "Live":
+                video_name = Path(self.video_path).stem
+                video_name_prefix = "".join(c for c in video_name if c.isalnum() or c in ('_', '-'))
             
-            # Check if we are in dataset mode (images already on disk)
-            is_dataset_mode = getattr(self, 'dataset_mode', False) and hasattr(self, 'dataset_frames')
-            
-            for i, (frame_num, annotations) in enumerate(frames_dict.items()):
+            for i, frame_num in enumerate(all_frames):
+                progress.setValue(i)
+                QApplication.processEvents()
+                
                 if progress.wasCanceled():
                     break
                 
-                # Determine train or val split
-                split = "train" if frame_num in train_frames else "val"
+                frame = None
+                img_name = None
                 
-                # Get image path and copy to output
                 if is_dataset_mode:
-                    # Dataset mode: copy existing image file
                     if 0 <= frame_num < len(self.dataset_frames):
-                        source_path, _, _ = self.dataset_frames[frame_num]
-                        if os.path.exists(source_path):
-                            img_name = f"seg_{frame_num:06d}.jpg"
-                            img_path = images_dir / split / img_name
-                            shutil.copy2(source_path, img_path)
-                        else:
-                            print(f"Warning: Source image not found: {source_path}")
-                            continue
+                        dataset_path, original_frame_num, dataset_index = self.dataset_frames[frame_num]
+                        original_name = Path(dataset_path).name
+                        stem = Path(original_name).stem
+                        suffix = Path(original_name).suffix
+                        
+                        # ÍNDICE GLOBAL ÚNICO: offset + índice local (evita colisões entre sessões)
+                        global_index = index_offset + dataset_index
+                        img_name = f"frame_{global_index:06d}_{stem}{suffix}"
+                        
+                        frame = cv2.imread(dataset_path)
+                        is_train = frame_num in train_indices
                     else:
-                        print(f"Warning: Frame {frame_num} out of range in dataset")
+                        continue
+                elif self.cap and self.cap.isOpened():
+                    current_pos = self.cap.get(cv2.CAP_PROP_POS_FRAMES)
+                    self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
+                    ret, frame = self.cap.read()
+                    self.cap.set(cv2.CAP_PROP_POS_FRAMES, current_pos)
+                    
+                    if ret:
+                        if video_name_prefix:
+                            img_name = f"{video_name_prefix}_{frame_num:06d}.jpg"
+                        else:
+                            img_name = f"frame_{frame_num:06d}.jpg"
+                        is_train = frame_num in train_indices
+                    else:
                         continue
                 else:
-                    # Video mode: extract and save frame
-                    frame = self._extract_frame(frame_num)
-                    if frame is None:
-                        print(f"Warning: Could not extract frame {frame_num}")
-                        continue
-                    
-                    img_name = f"seg_{frame_num:06d}.jpg"
-                    img_path = images_dir / split / img_name
-                    cv2.imwrite(str(img_path), frame)
+                    continue
                 
-                # Save segmentation label file (polygon format)
-                label_name = f"seg_{frame_num:06d}.txt"
-                label_path = labels_dir / split / label_name
+                if frame is None:
+                    continue
+                
+                img_subdir = "train" if is_train else "val"
+                
+                # Save image (apenas se não existir - preserva imagens existentes)
+                img_path = os.path.join(images_dir, img_subdir, img_name)
+                if not os.path.exists(img_path):
+                    cv2.imwrite(img_path, frame)
+
+                processed_frames += 1
+
+                # Save label (acumula com existentes - não sobrescreve)
+                label_name = Path(img_name).stem + ".txt"
+                label_path = os.path.join(labels_dir, img_subdir, label_name)
                 
                 with open(label_path, 'w') as f:
-                    for ann in annotations:
+                    for ann in frames_dict[frame_num]:
                         class_id = class_to_id[ann["class"]]
                         coords = ann["polygon"]  # List of (x,y) normalized 0-1
                         
@@ -3906,11 +3889,71 @@ class VideoAnnotator(QMainWindow):
                         line = f"{class_id} " + " ".join([f"{x:.6f} {y:.6f}" for x, y in coords])
                         f.write(line + "\n")
                 
-                exported_count += 1
+                exported_count += 1  
                 progress.setValue(i)
                 QApplication.processEvents()
             
             progress.close()
+
+            # ADD BACKGROUND IMAGES TO SEGMENTATION DATASET
+            if is_dataset_mode and hasattr(self, 'dataset_frames') and self.dataset_frames:
+                # Identify which frames have annotations
+                annotated_indices = set(frames_dict.keys())
+                
+                # All dataset indices
+                all_indices = set(range(len(self.dataset_frames)))
+                
+                # Background indices are those NOT in annotated_indices
+                background_indices = all_indices - annotated_indices
+                
+                if background_indices:
+                    # Split background images 80/20 between train and val
+                    bg_list = sorted(list(background_indices))
+                    split_point = int(len(bg_list) * 0.8)
+                    train_bg = set(bg_list[:split_point])
+                    val_bg = set(bg_list[split_point:])
+                    
+                    bg_count = 0
+                    
+                    # Copy background images to train folder
+                    for idx in train_bg:
+                        if 0 <= idx < len(self.dataset_frames):
+                            img_path = Path(self.dataset_frames[idx][0])
+                            original_name = img_path.name
+                            stem = Path(original_name).stem
+                            suffix = Path(original_name).suffix
+                            global_index = index_offset + idx
+                            img_name = f"frame_{global_index:06d}_{stem}{suffix}"
+                            
+                            dst = images_dir / "train" / img_name
+                            if not dst.exists():
+                                try:
+                                    shutil.copy2(img_path, dst)
+                                    bg_count += 1
+                                except Exception as e:
+                                    print(f"Error copying background {img_path}: {e}")
+                    
+                    # Copy background images to val folder
+                    for idx in val_bg:
+                        if 0 <= idx < len(self.dataset_frames):
+                            img_path = Path(self.dataset_frames[idx][0])
+                            original_name = img_path.name
+                            stem = Path(original_name).stem
+                            suffix = Path(original_name).suffix
+                            global_index = index_offset + idx
+                            img_name = f"frame_{global_index:06d}_{stem}{suffix}"
+                            
+                            dst = images_dir / "val" / img_name
+                            if not dst.exists():
+                                try:
+                                    shutil.copy2(img_path, dst)
+                                    bg_count += 1
+                                except Exception as e:
+                                    print(f"Error copying background {img_path}: {e}")
+                    
+                    if bg_count > 0:
+                        print(f"Added {bg_count} background images to segmentation dataset")
+                        self.set_status_message("background_images_added", bg_count)
             
             # Create dataset.yaml configuration file
             yaml_path = Path(output_dir) / "dataset.yaml"
@@ -3949,6 +3992,26 @@ class VideoAnnotator(QMainWindow):
             import traceback
             traceback.print_exc()
             return 0
+
+    def _extract_frame(self, frame_num):
+        """Helper to extract frame by number"""
+        if self.cap is None:
+            return None
+        
+        current_pos = self.cap.get(cv2.CAP_PROP_POS_FRAMES)
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
+        ret, frame = self.cap.read()
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, current_pos)
+        
+        return frame if ret else None
+    
+    def export_segmentation_dialog(self):
+        output_dir = QFileDialog.getExistingDirectory(
+            self, "Select output folder for segmentation dataset"
+        )
+        if output_dir:
+            self.export_yolo_segmentation_annotations(output_dir)
+
 
     def train_segmentation_model(self):
         # Check if we have segmentation annotations in current session
