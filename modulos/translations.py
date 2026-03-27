@@ -255,8 +255,14 @@ TEXTS = {
         "dataset_import_error": "Falha ao importar dataset: {}",
         "train_from_dataset_title": "Treinar a partir do Dataset",
         "train_from_dataset_question": "Nenhuma anotação manual na sessão atual.\nDeseja treinar a partir do dataset carregado?",
-        "select_dataset_folder": "Selecione a pasta do dataset (contendo images/ e labels/)"
-
+        "select_dataset_folder": "Selecione a pasta do dataset (contendo images/ e labels/)",
+        "no_cache": "Nennhum cache de hieraquia disponível, pulando a avaliação hierárquica",
+        "video_files_filter": "Vídeos",
+        "all_files": "Todos os arquivos",
+        "error_opening_video": "Erro ao abrir vídeo para extração de frames",
+        "recording_saved_summary": "Salvo: {} detecções únicas, {} frames",
+        "recording_saved_title": "Gravação Salva",
+        "recording_saved_message": "Vídeo: {}\nDetecções únicas: {}\nFrames salvos: {}\nAnotações: {}"
     },
     "en": {
         "about_text": (
@@ -516,6 +522,13 @@ TEXTS = {
         "dataset_import_error": "Failed to import dataset: {}",
         "train_from_dataset_title": "Train from Dataset",
         "train_from_dataset_question": "No manual annotations in current session.\nDo you want to train from the loaded dataset?",
-        "select_dataset_folder": "Select the dataset folder (containing images/ and labels/)"
+        "select_dataset_folder": "Select the dataset folder (containing images/ and labels/)",
+        "no_cache": "[Hierarchical] No cache available, skipping evaluation",
+        "video_files_filter": "Videos",
+        "all_files": "All Files",
+        "error_opening_video": "Error opening video for frame extraction",
+        "recording_saved_summary": "Saved: {} unique detections, {} frames",
+        "recording_saved_title": "Recording Saved",
+        "recording_saved_message": "Video: {}\nUnique detections: {}\nFrames saved: {}\nAnnotations: {}"
     }
 }

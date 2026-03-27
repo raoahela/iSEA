@@ -217,10 +217,11 @@ class VideoLabel(QLabel):
                 # Add to active annotations for display
                 self.active_annotations.append(annotation)
 
-                bbox_id = annotation['bbox_id']
-                QTimer.singleShot(self.annotation_display_ms, 
-                                lambda: self.remove_annotation_by_id(bbox_id))
-                
+                if not main_window.paused: 
+                    bbox_id = annotation['bbox_id']
+                    QTimer.singleShot(self.annotation_display_ms, 
+                                lambda: self.remove_annotation_completely(bbox_id))
+   
                 # Show SAM button after first bbox is drawn
                 if hasattr(main_window, 'sam2_refinement_btn') and main_window.sam2_refinement_btn:
                     main_window.sam2_refinement_btn.setVisible(True)
@@ -232,9 +233,28 @@ class VideoLabel(QLabel):
             self.update()
 
     def update_active_annotations(self):
-        self.active_annotations = self.frame_annotations.get(self.current_frame_num, [])
+        self.active_annotations = self.frame_annotations.get(self.current_frame_num, []).copy()
         self.update()
         
+    def remove_annotation_completely(self, bbox_id: str):
+        # Remove da visualização atual
+        self.active_annotations = [
+            a for a in self.active_annotations 
+            if a.get('bbox_id') != bbox_id
+        ]
+        
+        # Remove do frame_annotations para não reaparecer ao navegar
+        frame = self.current_frame_num
+        if frame in self.frame_annotations:
+            self.frame_annotations[frame] = [
+                a for a in self.frame_annotations[frame]
+                if a.get('bbox_id') != bbox_id
+            ]
+            if not self.frame_annotations[frame]:
+                del self.frame_annotations[frame]
+        
+        self.update()
+
     def remove_annotation(self, ann):
         frame = ann["frame_number"]
         bbox_id = ann.get("bbox_id") 
@@ -426,3 +446,30 @@ class VideoLabel(QLabel):
         frame_x = int(rel_pos.x() * (self.original_width / video_rect.width()))
         frame_y = int(rel_pos.y() * (self.original_height / video_rect.height()))
         return frame_x, frame_y
+    
+    def remove_annotation_from_display(self, bbox_id: str):
+        self.active_annotations = [
+            a for a in self.active_annotations 
+            if a.get('bbox_id') != bbox_id
+        ]
+        self.update()
+
+    def remove_annotation_by_id(self, bbox_id: str, remove_from_history=True):
+        # Remove de active_annotations
+        self.active_annotations = [
+            a for a in self.active_annotations 
+            if a.get('bbox_id') != bbox_id
+        ]
+        
+        # Só remove do histórico se explicitamente solicitado
+        if remove_from_history:
+            frame = self.current_frame_num
+            if frame in self.frame_annotations:
+                self.frame_annotations[frame] = [
+                    a for a in self.frame_annotations[frame]
+                    if a.get('bbox_id') != bbox_id
+                ]
+                if not self.frame_annotations[frame]:
+                    del self.frame_annotations[frame]
+        
+        self.update()

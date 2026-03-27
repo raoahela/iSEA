@@ -1,5 +1,6 @@
-import json
 import yaml
+import shutil
+from collections import defaultdict
 import os
 import sys
 import cv2
@@ -7,6 +8,7 @@ import hashlib
 import pandas as pd
 import traceback
 from datetime import datetime, timedelta
+import random
 import csv
 from datetime import datetime
 import platform
@@ -739,6 +741,9 @@ class VideoAnnotator(QMainWindow):
         # creates a file name with timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.recording_filename = f"recording_{timestamp}.avi"
+        self.current_frame_num = 0
+        self.live_start_time = datetime.now()
+        self.recording_start_time = datetime.now()
         
         #creates the video writer 
         fourcc = cv2.VideoWriter_fourcc(*'XVID')
@@ -791,59 +796,147 @@ class VideoAnnotator(QMainWindow):
         if not hasattr(self, 'recording_filename') or not os.path.exists(self.recording_filename):
             self.status_label.setText(self.texts["no_recording_to_save"])
             return
-            
+                    
         file_path, _ = QFileDialog.getSaveFileName(
             self, self.texts["save_recording_title"], 
             self.recording_filename,
-            "Vídeos (*.avi *.mp4);;Todos os arquivos (*)")
+            self.texts["video_files_filter"] + " (*.avi *.mp4);;" + self.texts["all_files"] + " (*)")
+                    
+        if not file_path:
+            return
+                
+        try:
+            import shutil
+            from collections import defaultdict
             
-        if file_path:
-            try:
-                import shutil
-                shutil.move(self.recording_filename, file_path)
-                self.status_label.setText(self.texts["video_saved"].format(file_path))
-                
-                # Save annotations as CSV (same format as save_annotations)
-                annotation_path = os.path.splitext(file_path)[0] + "_annotations.csv"
-                
-                # Prepare CSV data
-                import csv
-                export_data = []
-                for ann in self.recorded_detections:
-                    video_name = os.path.basename(file_path)
-                    confidence = ann.get('confidence', 0)
-                    confidence_str = f"{confidence:.2f}" if isinstance(confidence, (int, float)) else str(confidence)
+            # 1. Move o vídeo para o destino escolhido
+            shutil.move(self.recording_filename, file_path)
+            self.status_label.setText(self.texts["video_saved"].format(file_path))
+            
+            # Setup
+            video_name = Path(file_path).stem
+            frames_dir = Path(file_path).parent / f"{video_name}_frames"
+            frames_dir.mkdir(exist_ok=True)
+            
+            # 2. Deduplication por track_id (mantém melhor confiança)
+            best_by_track = {}
+            for detection in self.recorded_detections:
+                track_id = detection.get("track_id")
+                if track_id is not None:
+                    if track_id not in best_by_track or detection.get("confidence", 0) > best_by_track[track_id].get("confidence", 0):
+                        best_by_track[track_id] = detection
+                else:
+                    key = f"manual_{detection.get('frame_number', 0)}_{detection.get('x1', 0)}_{detection.get('y1', 0)}"
+                    best_by_track[key] = detection
+            
+            unique_detections = list(best_by_track.values())
+            
+            # 3. Abrir vídeo movido para extração
+            cap = cv2.VideoCapture(str(file_path))
+            if not cap.isOpened():
+                self.status_label.setText(self.texts["error_opening_video"])
+                return
                     
-                    export_data.append({
-                        "Video": video_name,
-                        "Timestamp": ann.get("timestamp", ""),
-                        "System_Date": ann.get("system_date", ""),
-                        "System_Time": ann.get("system_time", ""),
-                        "Taxon": ann.get("class", "Unknown"),
-                        "Confidence": confidence_str,
-                        "Type": ann.get("type", "unknown"),
-                        "Track_ID": ann.get("track_id", ""),
-                        "x1": ann.get("x1", ""),
-                        "y1": ann.get("y1", ""),
-                        "x2": ann.get("x2", ""),
-                        "y2": ann.get("y2", ""),
-                        "Frame_Number": ann.get("frame_number", ""),
-                        "Photo": ann.get("frame_path", "")
-                    })
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            if fps <= 0:
+                fps = 20
+            
+            # 4. Agrupar detecções por frame_number
+            frames_dict = defaultdict(list)
+            for det in unique_detections:
+                frame_num = det.get("frame_number", 0)
+                frames_dict[frame_num].append(det)
+            
+            # 5. PARA CADA FRAME: extrair do vídeo e desenhar MANUAIS
+            saved_frames = {}
+            for frame_num, detections in sorted(frames_dict.items()):
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
+                ret, frame = cap.read()
                 
-                # Write CSV
-                with open(annotation_path, 'w', newline='', encoding='utf-8') as csvfile:
-                    fieldnames = ["Video", "Timestamp", "System_Date", "System_Time",
-                                "Taxon", "Confidence", "Type", "Track_ID",
-                                "x1", "y1", "x2", "y2", "Frame_Number", "Photo"]
-                    writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-                    writer.writeheader()
-                    writer.writerows(export_data)
-                    
-                self.status_label.setText(self.texts["video_annotations_saved"].format(os.path.dirname(file_path)))
+                if not ret:
+                    continue
                 
-            except Exception as e:
-                self.status_label.setText(self.texts["saving_video_error"].format(str(e)))
+                # IMPORTANTE: Desenhar APENAS detecções MANUAIS (as auto já estão no vídeo!)
+                for det in detections:
+                    if det.get("type") == "manual":
+                        x1, y1, x2, y2 = int(det["x1"]), int(det["y1"]), int(det["x2"]), int(det["y2"])
+                        cls = det.get("class", "unknown")
+                        conf = det.get("confidence", 1.0)
+                        
+                        # Verde para manual
+                        color = (0, 255, 0)
+                        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                        
+                        # Label com fundo verde
+                        label = f"{cls} {conf:.2f}"
+                        (text_w, text_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+                        cv2.rectangle(frame, (x1, y1-text_h-10), (x1+text_w, y1), color, -1)
+                        cv2.putText(frame, label, (x1, y1-5), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+                
+                # Salvar frame com as boxes desenhadas
+                frame_filename = f"{video_name}_frame_{frame_num:06d}.jpg"
+                frame_path = frames_dir / frame_filename
+                cv2.imwrite(str(frame_path), frame)
+                saved_frames[frame_num] = str(frame_path)
+                
+                # Calcular timestamp e atualizar detecções
+                seconds = frame_num / fps
+                video_timestamp = f"{int(seconds//3600):02d}:{int((seconds%3600)//60):02d}:{int(seconds%60):02d}"
+                
+                for det in detections:
+                    det["frame_path"] = str(frame_path)
+                    det["video_timestamp"] = video_timestamp
+            
+            cap.release()
+            
+            # 6. Salvar CSV
+            annotation_path = os.path.splitext(file_path)[0] + "_annotations.csv"
+            export_data = []
+            
+            for ann in unique_detections:
+                confidence = ann.get('confidence', 0)
+                confidence_str = f"{confidence:.2f}" if isinstance(confidence, (int, float)) else str(confidence)
+                
+                export_data.append({
+                    "Video": os.path.basename(file_path),
+                    "Timestamp": ann.get("video_timestamp", ""),
+                    "System_Date": ann.get("system_date", ""),
+                    "System_Time": ann.get("system_time", ""),
+                    "Taxon": ann.get("class", "Unknown"),
+                    "Confidence": confidence_str,
+                    "Type": ann.get("type", "unknown"),
+                    "Track_ID": ann.get("track_id", ""),
+                    "x1": ann.get("x1", ""),
+                    "y1": ann.get("y1", ""),
+                    "x2": ann.get("x2", ""),
+                    "y2": ann.get("y2", ""),
+                    "Frame_Number": ann.get("frame_number", ""),
+                    "Photo": ann.get("frame_path", "")
+                })
+            
+            export_data.sort(key=lambda x: x["Frame_Number"] if x["Frame_Number"] != "" else 0)
+            
+            with open(annotation_path, 'w', newline='', encoding='utf-8') as csvfile:
+                fieldnames = ["Video", "Timestamp", "System_Date", "System_Time",
+                            "Taxon", "Confidence", "Type", "Track_ID",
+                            "x1", "y1", "x2", "y2", "Frame_Number", "Photo"]
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(export_data)
+            
+            self.recorded_detections = []
+            
+            QMessageBox.information(
+                self,
+                self.texts["recording_saved_title"],
+                f"Salvo {len(export_data)} anotações e {len(saved_frames)} frames"
+            )
+                        
+        except Exception as e:
+            import traceback
+            self.status_label.setText(self.texts["saving_video_error"].format(str(e)))
+            print(f"Error saving recording: {traceback.format_exc()}")
 
     def list_available_cameras(self):
         cameras = []
@@ -958,6 +1051,24 @@ class VideoAnnotator(QMainWindow):
         file_path, _ = QFileDialog.getOpenFileName(self, self.texts["select_video"], "", 
                                                    "Vídeos (*.mp4 *.avi *.mov *.mkv *.m4v *.flv *.wmv);;Todos os arquivos (*)")
         if file_path:
+            if hasattr(self, 'dataset_mode') and self.dataset_mode:
+                if hasattr(self, 'dataset_mode') and self.dataset_mode:
+                    self.detections_dock.detections_list.clear()
+                    self.detections_dock.all_detections.clear()                   
+                    self.manual_annotations_history = []
+                    self.detections = []
+                    self.dataset_mode = False
+                    self.video_label.frame_annotations = {}
+                    self.video_label.active_annotations = []
+                    self.video_label.segmentation_annotations = []
+                    self.all_detections = []
+                    self.annotations = []  
+
+            if hasattr(self, 'live_mode') and self.live_mode:
+                self.live_mode =  False
+
+            self.video_label.current_frame_num = 0
+            self.current_frame_num = 0
             self.start_video(file_path)
 
     def start_video(self, file_path):
@@ -1074,11 +1185,27 @@ class VideoAnnotator(QMainWindow):
                     self._play_action.setIcon(self.play_icon)
                     self._play_action.setText(self.texts["play"])
                     return
-               
-            # Updates the current frame number (only for video file)   
-            if not self.live_mode:
+                
+            if self.live_mode:
+                self.current_frame_num += 1
+                # Calcular timestamp baseado no tempo decorrido desde o início da gravação/timer
+                if not hasattr(self, 'live_start_time'):
+                    self.live_start_time = datetime.now()
+                elapsed = (datetime.now() - self.live_start_time).total_seconds()
+                hours = int(elapsed // 3600)
+                minutes = int((elapsed % 3600) // 60)
+                secs = int(elapsed % 60)
+                millis = int((elapsed % 1) * 1000)
+                current_timestamp = f"{hours:02d}:{minutes:02d}:{secs:02d}.{millis:03d}"
+            else:
                 self.current_frame_num = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES))
+                current_timestamp = self.get_video_timestamp(self.current_frame_num)
                 self.update_progress_slider()
+               
+
+            # Store current frame for manual annotation capture during recording
+            if self.live_mode and self.recording:
+                self.current_frame = frame.copy()
             
             # MODE 1x: 
             if self.continuous_detection and self.model and not self.velocity:
@@ -1130,10 +1257,10 @@ class VideoAnnotator(QMainWindow):
                             }
                             self.annotations.append(detection)
                             self.detections_dock.add_detection(detection)
+                            if self.recording:
+                                self.recorded_detections.append(detection)
 
             # MODE 2x: 
-            # Check for pending detection results from thread
-            # MOVED TO AFTER the 1x block to ensure it's checked every frame
             should_detect = True
             if self.continuous_detection and self.velocity:
                 self.frame_skip_counter += 1
@@ -1142,12 +1269,6 @@ class VideoAnnotator(QMainWindow):
             # if recording, saves the frame 
             if self.recording and self.video_writer is not None:
                 self.video_writer.write(frame)
-
-            # Frame skipping logic for continuous detection in 2x mode
-            should_detect = True
-            if self.continuous_detection and self.velocity:
-                self.frame_skip_counter += 1
-                should_detect = (self.frame_skip_counter % self.detection_every_n_frames == 0)
                 
             # Adds timestamp to frame (live mode only)
             if self.live_mode:
@@ -1316,6 +1437,8 @@ class VideoAnnotator(QMainWindow):
                         
                     self.annotations.append(detection)
                     self.detections_dock.add_detection(detection)
+                    if self.recording:
+                        self.recorded_detections.append(detection)
 
                 self.display_frame(plotted_frame)
                 return True
@@ -1363,6 +1486,8 @@ class VideoAnnotator(QMainWindow):
                 }
                 self.annotations.append(detection)
                 self.detections_dock.add_detection(detection)
+                if self.recording:
+                    self.recorded_detections.append(detection)
 
             # Handle display based on mode
             if self.velocity:
@@ -1647,6 +1772,7 @@ class VideoAnnotator(QMainWindow):
             idx = self.dataset_index - 1
             if idx >= 0:
                 self.load_dataset_frame(idx)
+                self.on_dataset_frame_changed(idx)
             return
         
         if self.cap is None:
@@ -1675,6 +1801,7 @@ class VideoAnnotator(QMainWindow):
             idx = self.dataset_index + 1
             if idx < len(self.dataset_frames):
                 self.load_dataset_frame(idx)
+                self.on_dataset_frame_changed(idx)
             return
         if self.cap is None:
             return
@@ -1818,6 +1945,7 @@ class VideoAnnotator(QMainWindow):
                             train_action.setEnabled(has_data)
                 break
 
+    
     def export_yolo_annotations(self, output_dir):
         if not hasattr(self, 'all_detections'):
             QMessageBox.warning(self, self.texts["warning"], self.texts["no_annotations_to_export"])
@@ -1847,8 +1975,36 @@ class VideoAnnotator(QMainWindow):
             os.makedirs(train_dir_labels, exist_ok=True)
             os.makedirs(val_dir_labels, exist_ok=True)
             
-            classes = sorted(list(set(ann["class"] for ann in manual_annotations)))
-            class_to_id = {name: idx for idx, name in enumerate(classes)}
+            # Carrega classes existentes do dataset.yaml se já existir (para preservar IDs)
+            yaml_path = os.path.join(output_dir, "dataset.yaml")
+            existing_classes = {}  # {name: id}
+            if os.path.exists(yaml_path):
+                try:
+                    with open(yaml_path, 'r') as f:
+                        yaml_data = yaml.safe_load(f)
+                    if yaml_data and 'names' in yaml_data:
+                        names = yaml_data['names']
+                        if isinstance(names, dict):
+                            existing_classes = {str(name): int(idx) for idx, name in names.items()}
+                        elif isinstance(names, list):
+                            existing_classes = {str(name): idx for idx, name in enumerate(names)}
+                except Exception as e:
+                    print(f"Warning: Could not load existing dataset.yaml: {e}")
+            
+            # Mescla classes: mantém existentes e adiciona novas
+            new_classes = set(ann["class"] for ann in manual_annotations)
+            merged_classes = dict(existing_classes)  # Copia existentes
+            
+            # Adiciona novas classes com IDs sequenciais
+            next_id = max(merged_classes.values()) + 1 if merged_classes else 0
+            for cls in sorted(new_classes):
+                if cls not in merged_classes:
+                    merged_classes[cls] = next_id
+                    next_id += 1
+            
+            # Cria mapping final preservando IDs antigos
+            classes = sorted(merged_classes.keys())  # Lista ordenada para consistência
+            class_to_id = merged_classes  # Dict com IDs preservados
             
             frames_dict = defaultdict(list)
             for ann in manual_annotations:
@@ -1860,16 +2016,20 @@ class VideoAnnotator(QMainWindow):
             is_dataset_mode = self.dataset_mode and hasattr(self, 'dataset_frames') and self.dataset_frames
             
             if is_dataset_mode:
-                # Random split for dataset mode
-                import random
+                random.seed(42)  
+                
                 all_indices = list(range(len(self.dataset_frames)))
                 random.shuffle(all_indices)
+                
+                split_idx = int(0.8 * len(all_indices))
+                print(f"Índice de corte (80%): {split_idx}")
+
                 split_idx = int(0.8 * len(all_indices))
                 train_indices = set(all_indices[:split_idx])
                 val_indices = set(all_indices[split_idx:])
+                
             else:
                 # Random split for video mode
-                import random
                 shuffled_frames = all_frames.copy()
                 random.shuffle(shuffled_frames)
                 split_idx = int(0.8 * len(shuffled_frames))
@@ -1877,6 +2037,24 @@ class VideoAnnotator(QMainWindow):
                 val_frames_set = set(shuffled_frames[split_idx:])
                 train_indices = train_frames_set
                 val_indices = val_frames_set
+            
+            # DETECTAR MAIOR ÍNDICE EXISTENTE para continuar sequência (sessões múltiplas)
+            existing_max_index = -1
+            for split in ['train', 'val']:
+                split_dir = Path(images_dir) / split
+                if split_dir.exists():
+                    for img_file in split_dir.glob('frame_*_*.jpg'):
+                        try:
+                            # Extrai número do padrão frame_XXXXXX_name.jpg
+                            parts = img_file.stem.split('_')
+                            if len(parts) >= 2:
+                                num = int(parts[1])
+                                existing_max_index = max(existing_max_index, num)
+                        except (IndexError, ValueError):
+                            continue
+            
+            # Offset para garantir unicidade entre sessões
+            index_offset = existing_max_index + 1
             
             progress = QProgressDialog(self.texts["exporting_frames"], self.texts["cancel"], 0, len(all_frames), self)
             progress.setWindowTitle(self.texts["exporting_dataset"])
@@ -1903,7 +2081,14 @@ class VideoAnnotator(QMainWindow):
                 if is_dataset_mode:
                     if 0 <= frame_num < len(self.dataset_frames):
                         dataset_path, original_frame_num, dataset_index = self.dataset_frames[frame_num]
-                        img_name = Path(dataset_path).name
+                        original_name = Path(dataset_path).name
+                        stem = Path(original_name).stem
+                        suffix = Path(original_name).suffix
+                        
+                        # ÍNDICE GLOBAL ÚNICO: offset + índice local (evita colisões entre sessões)
+                        global_index = index_offset + dataset_index
+                        img_name = f"frame_{global_index:06d}_{stem}{suffix}"
+                        
                         frame = cv2.imread(dataset_path)
                         is_train = frame_num in train_indices
                     else:
@@ -1915,7 +2100,6 @@ class VideoAnnotator(QMainWindow):
                     self.cap.set(cv2.CAP_PROP_POS_FRAMES, current_pos)
                     
                     if ret:
-                        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                         if video_name_prefix:
                             img_name = f"{video_name_prefix}_{frame_num:06d}.jpg"
                         else:
@@ -1931,49 +2115,67 @@ class VideoAnnotator(QMainWindow):
                 
                 img_subdir = "train" if is_train else "val"
                 
-                # Save image
+                # Save image (apenas se não existir - preserva imagens existentes)
                 img_path = os.path.join(images_dir, img_subdir, img_name)
-                cv2.imwrite(img_path, frame)
+                if not os.path.exists(img_path):
+                    cv2.imwrite(img_path, frame)
 
                 processed_frames += 1
 
-                # Save label
+                # Save label (acumula com existentes - não sobrescreve)
                 label_name = Path(img_name).stem + ".txt"
                 label_path = os.path.join(labels_dir, img_subdir, label_name)
+                
+                # Carrega anotações existentes para não perdê-las
+                existing_lines = set()
+                if os.path.exists(label_path):
+                    try:
+                        with open(label_path, 'r') as f_read:
+                            existing_lines = set(line.strip() for line in f_read if line.strip())
+                    except:
+                        pass
+                
+                # Acumula novas anotações
+                new_lines = set()
+                for ann in frames_dict[frame_num]:
+                    try:
+                        h, w = frame.shape[:2]
+                        x1 = max(0, ann["x1"])
+                        y1 = max(0, ann["y1"])
+                        x2 = min(w, ann["x2"])
+                        y2 = min(h, ann["y2"])
+
+                        # convert to yolo format 
+                        x_center = ((x1 + x2) / 2) / w
+                        y_center = ((y1 + y2) / 2) / h
+                        width = (x2 - x1) / w
+                        height = (y2 - y1) / h
+
+                        x_center = max(0.0, min(1.0, x_center))
+                        y_center = max(0.0, min(1.0, y_center))
+                        width = max(0.0, min(1.0, width))
+                        height = max(0.0, min(1.0, height))
+                        
+                        class_id = class_to_id[ann["class"]]
+                        line = f"{class_id} {x_center:.6f} {y_center:.6f} {width:.6f} {height:.6f}"
+                        new_lines.add(line)
+
+                    except Exception as e:
+                        continue
+                
+                # Escreve união de existentes + novas (evita duplicatas)
+                all_lines = existing_lines.union(new_lines)
                 with open(label_path, 'w') as f:
-                    for ann in frames_dict[frame_num]:
-                        try:
-                            h, w = frame.shape[:2]
-                            x1 = max(0, ann["x1"])
-                            y1 = max(0, ann["y1"])
-                            x2 = min(w, ann["x2"])
-                            y2 = min(h, ann["y2"])
-
-                            # convert to yolo format 
-                            x_center = ((x1 + x2) / 2) / w
-                            y_center = ((y1 + y2) / 2) / h
-                            width = (x2 - x1) / w
-                            height = (y2 - y1) / h
-
-                            x_center = max(0.0, min(1.0, x_center))
-                            y_center = max(0.0, min(1.0, y_center))
-                            width = max(0.0, min(1.0, width))
-                            height = max(0.0, min(1.0, height))
-                            
-                            class_id = class_to_id[ann["class"]]
-                            f.write(f"{class_id} {x_center:.6f} {y_center:.6f} {width:.6f} {height:.6f}\n")
-
-                        except Exception as e:
-                            continue
+                    for line in sorted(all_lines):  # Ordenado para consistência
+                        f.write(line + "\n")
 
             progress.close()
 
             # Background images only in dataset mode
             bg_count = 0
             if is_dataset_mode:
-                # Get indices of frames that have annotations
                 annotated_indices = set(frames_dict.keys())
-                bg_count = self.add_background_images_to_dataset(images_dir, train_indices, val_indices, annotated_indices)
+                bg_count = self.add_background_images_to_dataset(images_dir, train_indices, val_indices, annotated_indices, index_offset)
             
             # create dataset.yaml 
             yaml_path = os.path.join(output_dir, "dataset.yaml")
@@ -1984,8 +2186,8 @@ class VideoAnnotator(QMainWindow):
                 f.write(f"train: images/train\n")
                 f.write(f"val: images/val\n")
                 f.write(f"names:\n")
-                for idx, name in enumerate(classes):
-                    f.write(f"  {idx}: {name}\n")
+                for name in classes:
+                    f.write(f"  {class_to_id[name]}: {name}\n")
             
             self.show_info_message(
                 "export_completed",
@@ -2006,7 +2208,7 @@ class VideoAnnotator(QMainWindow):
                 traceback.format_exc()
             )
 
-    def add_background_images_to_dataset(self, images_dir, train_indices: set, val_indices: set, annotated_indices: set) -> int:
+    def add_background_images_to_dataset(self, images_dir, train_indices: set, val_indices: set, annotated_indices: set, index_offset: int = 0) -> int:
             if not self.dataset_mode or not hasattr(self, 'dataset_frames') or not self.dataset_frames:
                 return 0
             
@@ -2033,7 +2235,15 @@ class VideoAnnotator(QMainWindow):
             for idx in train_bg:
                 if 0 <= idx < len(self.dataset_frames):
                     img_path = Path(self.dataset_frames[idx][0])
-                    dst = images_dir / "train" / img_path.name
+                    
+                    # Usa mesmo padrão de nomenclatura das imagens anotadas (com offset)
+                    original_name = img_path.name
+                    stem = Path(original_name).stem
+                    suffix = Path(original_name).suffix
+                    global_index = index_offset + idx
+                    new_name = f"frame_{global_index:06d}_{stem}{suffix}"
+                    
+                    dst = images_dir / "train" / new_name
                     if not dst.exists():
                         try:
                             shutil.copy2(img_path, dst)
@@ -2045,15 +2255,21 @@ class VideoAnnotator(QMainWindow):
             for idx in val_bg:
                 if 0 <= idx < len(self.dataset_frames):
                     img_path = Path(self.dataset_frames[idx][0])
-                    dst = images_dir / "val" / img_path.name
+                    
+                    # Usa mesmo padrão de nomenclatura das imagens anotadas (com offset)
+                    original_name = img_path.name
+                    stem = Path(original_name).stem
+                    suffix = Path(original_name).suffix
+                    global_index = index_offset + idx
+                    new_name = f"frame_{global_index:06d}_{stem}{suffix}"
+                    
+                    dst = images_dir / "val" / new_name
                     if not dst.exists():
                         try:
                             shutil.copy2(img_path, dst)
                             background_count += 1
                         except Exception as e:
                             print(f"Error copying {img_path}: {e}")
-            
-            return background_count
     
     def export_yolo_annotations_dialog(self):
         output_dir = QFileDialog.getExistingDirectory(
@@ -2982,6 +3198,7 @@ class VideoAnnotator(QMainWindow):
             f"D: {self.texts['detect_frame']}",
             f"T: {self.texts['toggle_detection']}",
             f"M: {self.texts['annotate_manual']}",
+            f"E: {self.texts['enrich_taxonomy']}",
             f"Ctrl+O: {self.texts['load_video']}",
             f"Ctrl+M: {self.texts['load_model']}",
             f"Ctrl+W: {self.texts['live']}",
@@ -3030,7 +3247,15 @@ class VideoAnnotator(QMainWindow):
             system_info = self.get_system_timestamp()
             annotation["system_date"] = system_info['system_date']
             annotation["system_time"] = system_info['system_time']
-        # Avoid duplicates
+        
+        # Ensure required fields are present
+        annotation.setdefault("video_path", self.video_path or "Live")
+        annotation.setdefault("frame_number", self.current_frame_num)
+        annotation.setdefault("timestamp", self.get_video_timestamp(self.current_frame_num))
+        annotation.setdefault("type", "manual")
+        annotation.setdefault("confidence", 1.0)
+        
+        # Avoid duplicates in all_detections
         is_duplicate = False
         for existing in self.all_detections:
             if (existing.get("x1") == annotation.get("x1") and 
@@ -3045,11 +3270,35 @@ class VideoAnnotator(QMainWindow):
         if not is_duplicate:
             self.all_detections.append(annotation)
         
+        # Save to recorded_detections if recording is active
+        if self.recording:
+            manual_annotation = annotation.copy()
+            
+            # Create unique track_id for manual annotations
+            if manual_annotation.get("track_id") is None:
+                manual_annotation["track_id"] = f"manual_{len(self.recorded_detections)}_{self.current_frame_num}"
+            
+            # Save frame image for manual annotation immediately
+            if hasattr(self, 'current_frame') and self.current_frame is not None:
+                # Create frames directory if it doesn't exist
+                video_name = Path(self.recording_filename).stem if hasattr(self, 'recording_filename') else "recording"
+                frames_dir = Path(self.recording_filename).parent / f"{video_name}_frames" if hasattr(self, 'recording_filename') else Path("recording_frames")
+                frames_dir.mkdir(exist_ok=True)
+                
+                timestamp_str = datetime.now().strftime("%H%M%S%f")
+                frame_filename = f"{video_name}_manual_{manual_annotation['track_id']}_{self.current_frame_num:06d}_{timestamp_str}.jpg"
+                frame_path = frames_dir / frame_filename
+                
+                cv2.imwrite(str(frame_path), self.current_frame)
+                manual_annotation["frame_path"] = str(frame_path)
+                manual_annotation["frame_saved_at"] = datetime.now().isoformat()
+            
+            self.recorded_detections.append(manual_annotation)
+        
         # Add to detections dock
         self.detections_dock.add_detection(annotation)
         
-        # Refresh display to show all annotations including the new one
-        # This ensures previous annotations from same frame remain visible
+        # Refresh display
         self.refresh_frame_display()
 
     def refresh_frame_display(self):
@@ -3218,9 +3467,15 @@ class VideoAnnotator(QMainWindow):
             self.current_frame_num = 0
             self.total_frames = len(self.dataset_frames)
             self.paused = True
-            self.annotations = []
-            self.detections_dock.all_detections = []
-            self.detections_dock.apply_filters()
+            self.detections_dock.detections_list.clear()
+            self.detections_dock.all_detections.clear()                   
+            self.manual_annotations_history = []
+            self.detections = []
+            self.video_label.frame_annotations = {}
+            self.video_label.active_annotations = []
+            self.video_label.segmentation_annotations = []
+            self.all_detections = []
+            self.annotations = []  
             self.dataset_mode = True
             self.dataset_index = 0
 
@@ -3792,6 +4047,12 @@ class VideoAnnotator(QMainWindow):
     def open_enrichment_dialog(self):
         dialog = TaxonomyEnrichmentDialog(self)
         dialog.exec()
+
+    def on_dataset_frame_changed(self, frame_num):
+        self.current_frame_num = frame_num
+        self.video_label.current_frame_num = frame_num
+        self.video_label.update_active_annotations()  # Recarrega as anotações salvas deste frame
+        self.update()  # Força redesenho
 
     def closeEvent(self, event):
         # Stop SAM2 thread
