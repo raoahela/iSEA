@@ -50,7 +50,7 @@ class VideoAnnotator(QMainWindow):
     def __init__(self):
         super().__init__()
         
-        self.language = "pt"  
+        self.language = "en"  
         self.texts = TEXTS[self.language] 
         
         self.setWindowTitle("iSEA")
