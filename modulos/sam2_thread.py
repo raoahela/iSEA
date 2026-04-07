@@ -2,9 +2,13 @@ from PyQt6.QtCore import QThread, pyqtSignal, QMutex, QWaitCondition
 from ultralytics import SAM
 import numpy as np
 import torch
+from pathlib import Path
+from .utils import resource_path  
+import os
+import sys
 
 class SAM2Thread(QThread):
-    mask_finished = pyqtSignal(dict, object, int)  # mask_data, original_frame, frame_num
+    mask_finished = pyqtSignal(dict, object, int)
     error = pyqtSignal(str)
     
     def __init__(self, model_name="sam2.1_b.pt", parent=None):
@@ -12,7 +16,7 @@ class SAM2Thread(QThread):
         self.model = None
         self.current_frame = None
         self.current_frame_num = 0
-        self.prompts = []  # [(x, y, type)] where type: 1=foreground, 0=background
+        self.prompts = []
         self.running = True
         self.mutex = QMutex()
         self.condition = QWaitCondition()
@@ -21,14 +25,19 @@ class SAM2Thread(QThread):
         self.load_model()
 
     def load_model(self):
-        """Load SAM 2 model"""
         try:
+            model_path = resource_path(os.path.join("models", self.model_name))
+            if not os.path.exists(model_path):
+                raise FileNotFoundError(f"Model not found: {model_path}")
+            
             device = 'cuda' if self.cuda_available else 'cpu'
-            self.model = SAM(self.model_name)
+            self.model = SAM(model_path)  
             self.model.to(device)
+            
         except Exception as e:
             print(f"Failed to load SAM 2: {e}")
             self.error.emit(str(e))
+            self.model = None
 
     def set_frame_and_prompts(self, frame: np.ndarray, frame_num: int, prompts: list):
         """Set frame and prompts for segmentation"""

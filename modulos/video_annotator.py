@@ -2,7 +2,6 @@ import yaml
 import shutil
 from collections import defaultdict
 import os
-import sys
 import cv2
 import hashlib
 import pandas as pd
@@ -38,13 +37,8 @@ from .detection_thread import DetectionThread
 from .training_wizard import TrainingWizard
 from .sam2_thread import SAM2Thread
 from .taxonomy_enrichment import TaxonomyEnrichmentDialog
+from .utils import resource_path 
 
-def resource_path(relative_path):
-    try:
-        base_path = sys._MEIPASS
-    except Exception:
-        base_path = os.path.abspath(".")
-    return os.path.join(base_path, relative_path).replace("/", os.sep)
 
 class VideoAnnotator(QMainWindow):
     def __init__(self):
@@ -474,6 +468,11 @@ class VideoAnnotator(QMainWindow):
         unload_model_action = QAction(self.texts["unload_model"], self)
         unload_model_action.triggered.connect(self.unload_model)
         file_menu.addAction(unload_model_action)
+
+        load_yaml_action = QAction(self.texts["load_yaml"], self)
+        load_yaml_action.setShortcut(QKeySequence("Ctrl+Y"))
+        load_yaml_action.triggered.connect(lambda: self.load_dataset_taxons())
+        file_menu.addAction(load_yaml_action)
 
         load_annotations_action = QAction(self.texts["load_annotations"], self)
         load_annotations_action.setShortcut(QKeySequence("Ctrl+L"))
@@ -1014,8 +1013,8 @@ class VideoAnnotator(QMainWindow):
         try:
             if model_path is None:
                 # loads deafault model
-                self.model = YOLO(resource_path("yolo26n.pt"))
-                self.model_path = "yolo26n.pt"
+                self.model_path = r"models\corais_fp16.pt"
+                self.model = YOLO(resource_path(self.model_path))
             else:
                 if os.path.exists(model_path):
                     self.model = YOLO(resource_path(model_path))
@@ -1039,6 +1038,71 @@ class VideoAnnotator(QMainWindow):
             QMessageBox.critical(self, self.texts["error"], error_msg)
             self.model = None
             self.model_path = None
+
+    def load_dataset_taxons(self, yaml_path=None):
+        try:
+            # Select file if not provided
+            if yaml_path is None:
+                yaml_path, _ = QFileDialog.getOpenFileName(
+                    self,
+                    "Select dataset.yaml",
+                    "",
+                    "YAML Files (*.yaml *.yml);;All Files (*)"
+                )
+                
+                if not yaml_path:
+                    return
+            
+            # Load YAML
+            with open(yaml_path, 'r', encoding='utf-8') as f:
+                data = yaml.safe_load(f)
+            
+            # Extract class names
+            names = data.get('names', {})
+            
+            # Format can be dict {0: 'class1', 1: 'class2'} or list ['class1', 'class2']
+            if isinstance(names, dict):
+                class_names = [names[i] for i in sorted(names.keys())]
+            elif isinstance(names, list):
+                class_names = names
+            else:
+                raise ValueError("Invalid 'names' format in YAML")
+            
+            # Clear current grid (optional - remove if you want to add to existing)
+            if hasattr(self, 'taxon_grid'):
+                self.taxon_grid.clear()  # or clear_taxons(), depends on implementation
+                
+                # Add each class as taxon
+                for idx, class_name in enumerate(class_names):
+                    # If your taxon_grid has add_taxon method:
+                    self.taxon_grid.add_taxon(
+                        taxon_id=idx,
+                        name=class_name,
+                        category="auto"  # or detail from YAML if available
+                    )
+                
+                # Update status
+                num_classes = len(class_names)
+                self.status_label.setText(f"Taxons loaded: {num_classes} classes from {os.path.basename(yaml_path)}")
+                
+                # Optional: Save reference to loaded YAML
+                self.current_dataset_yaml = yaml_path
+                
+                QMessageBox.information(
+                    self,
+                    "Success",
+                    f"{num_classes} classes loaded from dataset:\n{yaml_path}"
+                )
+                
+                # Update grid visually
+                #self.refresh_taxon_grid()
+                
+        except FileNotFoundError:
+            QMessageBox.critical(self, "Error", f"File not found:\n{yaml_path}")
+        except yaml.YAMLError as e:
+            QMessageBox.critical(self, "Error", f"Invalid YAML file:\n{str(e)}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error loading taxons:\n{str(e)}")
 
     def unload_model(self):
         self.model = None
@@ -3198,6 +3262,7 @@ class VideoAnnotator(QMainWindow):
             f"E: {self.texts['enrich_taxonomy']}",
             f"Ctrl+O: {self.texts['load_video']}",
             f"Ctrl+M: {self.texts['load_model']}",
+            f"Ctrl+Y: {self.texts['load_yaml']}",
             f"Ctrl+W: {self.texts['live']}",
             f"Ctrl+S: {self.texts['save_annotations']}",
             f"Ctrl+R: {self.texts['start_recording']}",
@@ -3519,7 +3584,7 @@ class VideoAnnotator(QMainWindow):
     
     def init_sam2(self):
         try:
-            self.sam2_thread = SAM2Thread("sam2.1_b.pt", self)
+            self.sam2_thread = SAM2Thread("sam2.1_b.pt", self) # testing sam 3
             self.sam2_thread.mask_finished.connect(self.on_sam2_mask_finished)
             self.sam2_thread.error.connect(self.on_sam2_error)
             self.sam2_thread.start()
