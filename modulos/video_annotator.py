@@ -149,6 +149,11 @@ class VideoAnnotator(QMainWindow):
         self.annotate_button.setIcon(QIcon(resource_path("icons/annotate_icon.png")))
         self.annotate_button.setIconSize(QtCore.QSize(30, 30))
 
+        self.sam_button = QPushButton("")
+        self.sam_button.setToolTip(self.texts["segment_with_sam2"])
+        self.sam_button.setIcon(QIcon(resource_path("icons/sam_icon.png")))
+        self.sam_button.setIconSize(QtCore.QSize(30, 30))
+
         self.save_button = QPushButton("")
         self.save_button.setToolTip(self.texts["save_annotations"])
         self.save_button.setIcon(QIcon(resource_path("icons/save_icon.png")))
@@ -173,6 +178,7 @@ class VideoAnnotator(QMainWindow):
         self.detect_button.clicked.connect(self.detect_objects)
         self.toggle_button.clicked.connect(self.toggle_detection)
         self.annotate_button.clicked.connect(self.enable_manual_annotation)
+        self.sam_button.clicked.connect(self.toggle_sam2_refinement)
         self.save_button.clicked.connect(self.save_annotations)
         self.save_frame_button.clicked.connect(self.save_current_frame_with_annotations)
         self.live_button.clicked.connect(self.toggle_live_mode)
@@ -222,6 +228,7 @@ class VideoAnnotator(QMainWindow):
         button_layout.addWidget(self.toggle_button)
         button_layout.addWidget(self.detect_button)
         button_layout.addWidget(self.annotate_button)
+        button_layout.addWidget(self.sam_button)
         button_layout.addWidget(self.save_button)
         button_layout.addWidget(self.save_frame_button)
         button_layout.addWidget(self.merge_button)
@@ -290,62 +297,94 @@ class VideoAnnotator(QMainWindow):
 
         self.setStyleSheet("""
             QWidget {
-                background-color: #ffffff;
-                color: #000000;
+                background-color: #FAFCFD;
+                color: #37474F;
             }
             QMenuBar {
-                background-color: #ffffff;
-                color: #000000;
+                background-color: #F5FAFC;
+                color: #37474F;
+                border-bottom: 1px solid #D6EAF8;
             }
             QMenu {
-                background-color: #ffffff;
-                color: #000000;
-                border: 1px solid #ccc;
+                background-color: #FFFFFF;
+                color: #37474F;
+                border: 1px solid #D6EAF8;
             }
             QMenu::item:selected {
-                background-color: #d0d0d0;
+                background-color: #E1F5FE;
+                color: #0277BD;
+            }
+            QMenu::item:pressed {
+                background-color: #B3E5FC;
             }
             QToolBar {
-                background-color: #f0f0f0;
+                background-color: #F0F9FF;
                 border: none;
+                padding: 2px;
             }
             QDockWidget {
-                background-color: #ffffff;
-                color: #000000;
+                background-color: #FAFCFD;
+                color: #37474F;
+                border: 1px solid #D6EAF8;
             }
             QDockWidget::title {
-                background-color: #e0e0e0;
-                color: black;
+                background-color: #E3F2FD;
+                color: #37474F;
+                padding: 4px;
             }
             QListWidget {
-                background-color: #ffffff;
-                color: black;
-                border: 1px solid #ccc;
+                background-color: #FFFFFF;
+                color: #37474F;
+                border: 1px solid #D6EAF8;
             }
             QListWidget::item:selected {
-                background-color: #cce5ff;
-                color: black;
+                background-color: #E1F5FE;
+                color: #0277BD;
+            }
+            QListWidget::item:hover {
+                background-color: #F5FAFC;
             }
             QGroupBox {
-                color: black;
-                border: 1px solid #aaa;
+                color: #37474F;
+                border: 1px solid #B3E5FC;
+                border-radius: 4px;
                 margin-top: 10px;
                 font-weight: bold;
+                background-color: transparent;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
                 left: 10px;
                 padding: 0 5px 0 5px;
+                color: #0288D1;
             }
             QSlider::groove:horizontal {
-                background: #ddd;
+                background: #E3F2FD;
                 height: 6px;
+                border-radius: 3px;
+            }
+            QSlider::sub-page:horizontal {
+                background: #B3E5FC;
+                border-radius: 3px;
             }
             QSlider::handle:horizontal {
-                background: #0078d4;
+                background: #4FC3F7;
                 width: 12px;
                 margin: -3px 0;
                 border-radius: 6px;
+                border: 1px solid #29B6F6;
+            }
+            QSlider::handle:horizontal:hover {
+                background: #29B6F6;
+            }
+            QLabel {
+                color: #37474F;
+                background-color: transparent;
+            }
+            QStatusBar {
+                background-color: #F0F9FF;
+                color: #37474F;
+                border-top: 1px solid #D6EAF8;
             }
         """)
 
@@ -353,47 +392,43 @@ class VideoAnnotator(QMainWindow):
             QPushButton {
                 padding: 3px 8px;
                 border-radius: 4px;
-                border: 1px solid #aaa;
-                background-color: #f0f0f0;
-                color: black;
+                border: 1px solid #B3E5FC;
+                background-color: #E1F5FE;
+                color: #37474F;
                 min-width: 23px;
                 min-height: 23px;
             }
             QPushButton:hover {
-                background-color: #e0e0e0;
+                background-color: #B3E5FC;
+                border-color: #81D4FA;
             }
             QPushButton:pressed {
-                background-color: #ccc;
+                background-color: #4FC3F7;
+                color: white;
+                border-color: #29B6F6;
+            }
+            QPushButton:disabled {
+                background-color: #F5FAFC;
+                color: #B0BEC5;
+                border-color: #ECEFF1;
+            }
+            QPushButton:checked {
+                background-color: #29B6F6;
+                color: white;
+                border-color: #0288D1;
             }
         """
         for btn in [
             self.load_button, self.live_button, self.detect_button,
-            self.toggle_button, self.annotate_button, self.save_button,
+            self.toggle_button, self.annotate_button, self.sam_button, self.save_button,
             self.save_frame_button, self.merge_button
         ]:
             btn.setStyleSheet(button_style)
 
-        light_palette = QPalette()
-        light_palette.setColor(QPalette.ColorRole.Window, QColor(255, 255, 255))
-        light_palette.setColor(QPalette.ColorRole.WindowText, Qt.GlobalColor.black)
-        light_palette.setColor(QPalette.ColorRole.Base, QColor(255, 255, 255))
-        light_palette.setColor(QPalette.ColorRole.Text, Qt.GlobalColor.black)
-        light_palette.setColor(QPalette.ColorRole.Button, QColor(240, 240, 240))
-        light_palette.setColor(QPalette.ColorRole.ButtonText, Qt.GlobalColor.black)
-        self.setPalette(light_palette)
+        
 
     def set_dark_mode(self, enable=True):
         if enable:
-            dark_palette = QPalette()
-            dark_palette.setColor(QPalette.ColorRole.Window, QColor(53, 53, 53))
-            dark_palette.setColor(QPalette.ColorRole.WindowText, Qt.GlobalColor.white)
-            dark_palette.setColor(QPalette.ColorRole.Base, QColor(25, 25, 25))
-            dark_palette.setColor(QPalette.ColorRole.Text, Qt.GlobalColor.white)
-            dark_palette.setColor(QPalette.ColorRole.Button, QColor(53, 53, 53))
-            dark_palette.setColor(QPalette.ColorRole.ButtonText, Qt.GlobalColor.white)
-            dark_palette.setColor(QPalette.ColorRole.Highlight, QColor(42, 130, 218))
-            dark_palette.setColor(QPalette.ColorRole.HighlightedText, Qt.GlobalColor.black)
-            self.setPalette(dark_palette)
             self._previous_action.setIcon(self.recolor_icon(QStyle.StandardPixmap.SP_MediaSkipBackward))
             self._play_action.setIcon(self.recolor_icon(QStyle.StandardPixmap.SP_MediaPlay))
             self._play_action.setIcon(self.recolor_icon(QStyle.StandardPixmap.SP_MediaPause))
@@ -425,7 +460,7 @@ class VideoAnnotator(QMainWindow):
             """
             for btn in [
                 self.load_button, self.live_button, self.detect_button,
-                self.toggle_button, self.annotate_button, self.save_button,
+                self.toggle_button, self.annotate_button, self.sam_button, self.save_button,
                 self.save_frame_button, self.merge_button
             ]:
                 btn.setStyleSheet(button_style)
@@ -542,6 +577,11 @@ class VideoAnnotator(QMainWindow):
         manual_action.triggered.connect(self.enable_manual_annotation)
         annotation_menu.addAction(manual_action)
 
+        sam_action = QAction(self.texts["segment_with_sam2"], self)
+        sam_action.setShortcut(QKeySequence("S"))
+        sam_action.triggered.connect(self.toggle_sam2_refinement)
+        annotation_menu.addAction(sam_action)
+
         enrich_action = QAction(self.texts["enrich_taxonomy"], self)
         enrich_action.setShortcut(QKeySequence("E"))
         enrich_action.triggered.connect(self.open_enrichment_dialog)
@@ -638,6 +678,7 @@ class VideoAnnotator(QMainWindow):
         self.detect_button.setToolTip(self.texts["detect_frame"])
         self.toggle_button.setToolTip(self.texts["toggle_detection"])
         self.annotate_button.setToolTip(self.texts["annotate_manual"])
+        self.sam_button.setToolTip(self.texts["segment_with_sam2"])
         self.save_button.setToolTip(self.texts["save_annotations"])
         self.save_frame_button.setToolTip(self.texts["save_frame"])
         self.live_button.setToolTip(self.texts["live"])
@@ -665,17 +706,17 @@ class VideoAnnotator(QMainWindow):
                 QPushButton {{
                     padding: 3px 8px;
                     border-radius: 4px;
-                    border: 1px solid {'#666' if is_dark else '#aaa'};
-                    background-color: {'#333' if is_dark else '#f0f0f0'};
+                    border: 1px solid {'#666' if is_dark else '#81D4FA'};
+                    background-color: {'#333' if is_dark else '#B3E5FC'};
                     color: {'white' if is_dark else 'black'};
                     min-width: 23px;
                     min-height: 23px;
                 }}
                 QPushButton:hover {{
-                    background-color: {'#555' if is_dark else '#e0e0e0'};
+                    background-color: {'#555' if is_dark else '#81D4FA'};
                 }}
                 QPushButton:pressed {{
-                    background-color: {'#2a82da' if is_dark else '#ccc'};
+                    background-color: {'#2a82da' if is_dark else '#29B6F6'};
                 }}
             """)
 
@@ -1025,16 +1066,19 @@ class VideoAnnotator(QMainWindow):
         try:
             if model_path is None:
                 # loads deafault model
-                self.model_path = Path("models") / "corais_fp16.pt"
+                self.model_path = r"models\corais_fp16.pt"
                 self.model = YOLO(resource_path(self.model_path))
             else:
                 if os.path.exists(model_path):
                     self.model = YOLO(resource_path(model_path))
                     self.model_path = os.path.basename(model_path)
-                    if self.detection_thread:
-                        self.detection_thread.set_model(self.model)
                 else:
                     raise FileNotFoundError(self.texts["model_not_found"].format(model_path))
+            
+            # ATUALIZAR A THREAD AQUI (independente do path)
+            if hasattr(self, 'detection_thread') and self.detection_thread:
+                self.detection_thread.set_model(self.model)
+                print(f"DEBUG: Model loaded and set in thread: {self.model_path}")
             
             self.status_label.setText(self.texts["model_loaded"].format(self.model_path))
             
@@ -1618,17 +1662,17 @@ class VideoAnnotator(QMainWindow):
                     QPushButton {{
                         padding: 3px 8px;
                         border-radius: 4px;
-                        border: 1px solid {'#666' if is_dark else '#aaa'};
-                        background-color: {'#333' if is_dark else '#f0f0f0'};
+                        border: 1px solid {'#666' if is_dark else '#81D4FA'};
+                        background-color: {'#333' if is_dark else '#B3E5FC'};
                         color: {'white' if is_dark else 'black'};
                         min-width: 23px;
                         min-height: 23px;
                     }}
                     QPushButton:hover {{
-                        background-color: {'#555' if is_dark else '#e0e0e0'};
+                        background-color: {'#555' if is_dark else '#81D4FA'};
                     }}
                     QPushButton:pressed {{
-                        background-color: {'#2a82da' if is_dark else '#ccc'};
+                        background-color: {'#2a82da' if is_dark else '#29B6F6'};
                     }}
                 """)
                 self.set_status_message("continuous_detection_off")
@@ -1652,16 +1696,7 @@ class VideoAnnotator(QMainWindow):
         # Toggle manual annotation mode
         self.video_label.drawing_enabled = not self.video_label.drawing_enabled
 
-        if self.video_label.drawing_enabled:
-            # Create SAM 2 button if it doesn't exist
-            if not hasattr(self, 'sam2_refinement_btn') or self.sam2_refinement_btn is None:
-                self.sam2_refinement_btn = QPushButton(self.texts["segment_with_sam2"])
-                self.sam2_refinement_btn.clicked.connect(self.toggle_sam2_refinement)
-                self.statusBar().addWidget(self.sam2_refinement_btn)
-            
-            # Hide button initially, will show after first bbox is drawn
-            self.sam2_refinement_btn.setVisible(False)
-            
+        if self.video_label.drawing_enabled:   
             # Verify class selection
             if not self.video_label.current_class:
                 first = next(iter(self.taxon_grid._buttons.keys()), None)
@@ -1687,25 +1722,20 @@ class VideoAnnotator(QMainWindow):
             self.set_status_message("manual_annotation_on")
 
         else:
-            # Hide SAM 2 button when exiting manual mode
-            if hasattr(self, 'sam2_refinement_btn') and self.sam2_refinement_btn:
-                self.sam2_refinement_btn.setVisible(False)
-                self.sam2_refinement_mode = False  # Reset SAM mode
-                self.sam2_refinement_btn.setStyleSheet("")  # Reset style
             
             # Set button to INACTIVE state (normal color)
             style = f"""
                 QPushButton {{
                     padding: 3px 8px;
                     border-radius: 4px;
-                    border: 1px solid {'#666' if is_dark else '#aaa'};
-                    background-color: {'#333' if is_dark else '#f0f0f0'};
+                    border: 1px solid {'#666' if is_dark else '#81D4FA'};
+                    background-color: {'#333' if is_dark else '#B3E5FC'};
                     color: {'white' if is_dark else 'black'};
                     min-width: 23px;
                     min-height: 23px;
                 }}
                 QPushButton:hover {{
-                    background-color: {'#555' if is_dark else '#e0e0e0'};
+                    background-color: {'#555' if is_dark else '#81D4FA'};
                 }}
                 QPushButton:pressed {{
                     background-color: {'#2a82da' if is_dark else '#ccc'};
@@ -1991,7 +2021,7 @@ class VideoAnnotator(QMainWindow):
             self.frame_skip_counter = 0
             
             # INCREASE detection buffer to maintain tracking
-            self.detection_every_n_frames = 3  # Detect every 3 frames (not 2)
+            self.detection_every_n_frames = 2  # Detect every 2 frames
             self.track_buffer_size = 5  # Keep history of 5 frames
             
             fps = self.cap.get(cv2.CAP_PROP_FPS)
@@ -3269,6 +3299,7 @@ class VideoAnnotator(QMainWindow):
             f"D: {self.texts['detect_frame']}",
             f"T: {self.texts['toggle_detection']}",
             f"M: {self.texts['annotate_manual']}",
+            f"S: {self.texts['segment_with_sam2']}",
             f"E: {self.texts['enrich_taxonomy']}",
             f"Ctrl+O: {self.texts['load_video']}",
             f"Ctrl+M: {self.texts['load_model']}",
@@ -3727,7 +3758,17 @@ class VideoAnnotator(QMainWindow):
         
         if self.sam2_refinement_mode:
             # Activate SAM 
-            self.sam2_refinement_btn.setStyleSheet("background-color: #ff9500; color: white; font-weight: bold;")
+            self.sam_button.setStyleSheet("""
+                    QPushButton {
+                        padding: 3px 8px;
+                        border-radius: 4px;
+                        border: 1px solid #5c9eff;
+                        background-color: #5c9eff;
+                        color: white;
+                        min-width: 23px;
+                        min-height: 23px;
+                    }
+                """)
             self.set_status_message("sam2_refinement_on")
             
             # Create box for SAM - format as list of lists [[x1, y1, x2, y2]]
@@ -3746,7 +3787,17 @@ class VideoAnnotator(QMainWindow):
         else:
             # Deactivate SAM
             self.current_bb_for_refinement = None
-            self.sam2_refinement_btn.setStyleSheet("")
+            self.sam_button.setStyleSheet("""QPushButton {
+                                            padding: 3px 8px;
+                                            border-radius: 4px;
+                                            border: 1px solid #aaa;
+                                            background-color: #f0f0f0;
+                                            color: black;
+                                            min-width: 23px;
+                                            min-height: 23px;
+                                          } 
+                                          """)
+            
             self.set_status_message("sam2_refinement_off")
 
             sam_frame = self._get_frame_for_sam()
