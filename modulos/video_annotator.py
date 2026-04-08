@@ -508,11 +508,17 @@ class VideoAnnotator(QMainWindow):
         
         # view menu
         view_menu = menubar.addMenu(self.texts["visualization"])
+
         toggle_history_action = QAction(self.texts["history_show"], self)
         toggle_history_action.setShortcut(QKeySequence("Ctrl+H"))
         toggle_history_action.triggered.connect(self.toggle_detections_history)
         view_menu.addAction(toggle_history_action)
-        view_menu.addSeparator()
+
+        toggle_taxon_action = QAction(self.texts["taxon_show"], self)
+        toggle_taxon_action.setShortcut(QKeySequence("Ctrl+T"))
+        toggle_taxon_action.triggered.connect(self.toggle_taxon_grid)
+        view_menu.addAction(toggle_taxon_action)
+
         dark_mode_action = QAction(self.texts["dark_mode"], self)
         dark_mode_action.setCheckable(True)
         dark_mode_action.triggered.connect(self.set_dark_mode)
@@ -603,6 +609,12 @@ class VideoAnnotator(QMainWindow):
             self.detections_dock.hide()
         else:
             self.detections_dock.show()
+
+    def toggle_taxon_grid(self):
+        if self.taxon_grid_dock.isVisible():
+            self.taxon_grid_dock.hide()
+        else:
+            self.taxon_grid_dock.show()
 
     def load_annotations_dialog(self):
         file_path, _ = QFileDialog.getOpenFileName(self, self.texts["select_annotations_file"], 
@@ -3267,6 +3279,8 @@ class VideoAnnotator(QMainWindow):
             f"Ctrl+Shift+R: {self.texts['stop_recording']}",
             f"Ctrl+Q: {self.texts['exit']}",
             f"Ctrl+L: {self.texts['load_annotations']}",
+            f"Ctrl+H: {self.texts['history_show']}",
+            f"Ctrl+H: {self.texts['taxon_show']}",
             f"F1: {self.texts['shortcuts']}"
         ]
         QMessageBox.information(self, self.texts["shortcuts"], "\n".join(shortcuts))

@@ -40,6 +40,7 @@ TEXTS = {
         # Menu Visualização
         "visualization": "Visualização",
         "history_show": "Mostrar/Ocultar Histórico",
+        "taxon_show": "Mostrar/Ocultar Taxon Grid",
         "dark_mode": "Modo Escuro",
         
         # Menu Anotação
@@ -306,6 +307,7 @@ TEXTS = {
         # Menu Visualização
         "visualization": "View",
         "history_show": "Show/Hide History",
+        "taxon_show": "Show/Hide Taxon Grid",
         "dark_mode": "Dark Mode",
         
         # Menu Anotação
