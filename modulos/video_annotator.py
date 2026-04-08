@@ -1013,7 +1013,7 @@ class VideoAnnotator(QMainWindow):
         try:
             if model_path is None:
                 # loads deafault model
-                self.model_path = r"models\corais_fp16.pt"
+                self.model_path = Path("models") / "corais_fp16.pt"
                 self.model = YOLO(resource_path(self.model_path))
             else:
                 if os.path.exists(model_path):
