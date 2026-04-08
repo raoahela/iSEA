@@ -8,3 +8,4 @@ PyYAML
 PyQt6
 pandas
 scikit-image
+lap

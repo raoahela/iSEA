@@ -1094,8 +1094,6 @@ class VideoAnnotator(QMainWindow):
                     f"{num_classes} classes loaded from dataset:\n{yaml_path}"
                 )
                 
-                # Update grid visually
-                #self.refresh_taxon_grid()
                 
         except FileNotFoundError:
             QMessageBox.critical(self, "Error", f"File not found:\n{yaml_path}")

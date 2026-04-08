@@ -60,30 +60,9 @@ class TaxonGrid(QWidget):
         for name in sorted(classes, key=str.lower):
             self.insert_button(name)
 
-    def add_taxon(self, name, taxon_id=None, category=None):
-        # Se já existe nome igual ou tem taxon_id diferente, crie chave única
-        key = name
-        if taxon_id is not None:
-            key = f"{name}_{taxon_id}"
-        
-        # Se ainda assim existir, adicione contador
-        original_key = key
-        counter = 1
-        while key in self._buttons:
-            key = f"{original_key}_{counter}"
-            counter += 1
-        
-        if name:  # Verifica se nome não é vazio
-            self.insert_button(key)  # Usa chave única para o dicionário
-            
-            # Opcional: armazenar metadados no botão
-            btn = self._buttons[key]
-            btn.setProperty("display_name", name)
-            btn.setProperty("taxon_id", taxon_id)
-            btn.setProperty("category", category)
-            
-            # Se quiser mostrar o nome original no botão (sem o ID):
-            btn.setText(name)
+    def add_taxon(self, name):
+        if name and name not in self._buttons:
+            self.insert_button(name)
 
     def insert_button(self, name):
         btn = QPushButton(name)

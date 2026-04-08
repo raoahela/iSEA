@@ -1,3 +1,4 @@
+
 import sys
 import os
 from PyQt6.QtWidgets import QApplication
@@ -15,3 +16,4 @@ if __name__ == "__main__":
     window = VideoAnnotator()
     window.show()
     sys.exit(app.exec())
+    
