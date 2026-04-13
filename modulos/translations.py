@@ -16,7 +16,7 @@ TEXTS = {
         # Tooltips dos botões
         "load_video": "Carregar Vídeo",
         "detect_frame": "Detectar objetos no frame atual",
-        "toggle_detection": "Ativar/desativar detecção contínua",
+        "toggle_detection": "Detecção contínua",
         "annotate_manual": "Anotação manual",
         "save_annotations": "Salvar anotações",
         "save_frame": "Salvar frame com anotações",
@@ -119,7 +119,6 @@ TEXTS = {
         "advanced_training_settings": "Configurações Avançadas de Treinamento",
         "exporting_dataset": "Exportando Dataset YOLO",
         "training_model": "Treinamento do Modelo YOLO",
-        "keyboard_shortcuts": "Atalhos do Teclado",
         "about_title": "Sobre",
         "navigate_frames": "Navegar entre frames",
         "choose_merge_columns": "Escolha as colunas-chave",
@@ -283,7 +282,7 @@ TEXTS = {
         # Tooltips dos botões
         "load_video": "Load Video",
         "detect_frame": "Detect objects in current frame",
-        "toggle_detection": "Toggle continuous detection",
+        "toggle_detection": "Continuous detection",
         "annotate_manual": "Manual annotation",
         "save_annotations": "Save annotations",
         "save_frame": "Save frame with annotations",
@@ -387,7 +386,6 @@ TEXTS = {
         "advanced_training_settings": "Advanced Training Settings",
         "exporting_dataset": "Exporting YOLO Dataset",
         "training_model": "YOLO Model Training",
-        "keyboard_shortcuts": "Keyboard Shortcuts",
         "about_title": "About",
         "navigate_frames": "Navigate between frames",
         "choose_merge_columns": "Choose key columns",

@@ -1066,7 +1066,7 @@ class VideoAnnotator(QMainWindow):
         try:
             if model_path is None:
                 # loads deafault model
-                self.model_path = r"models\corais_fp16.pt"
+                self.model_path = r"models\corais.pt"
                 self.model = YOLO(resource_path(self.model_path))
             else:
                 if os.path.exists(model_path):
@@ -1078,7 +1078,6 @@ class VideoAnnotator(QMainWindow):
             # ATUALIZAR A THREAD AQUI (independente do path)
             if hasattr(self, 'detection_thread') and self.detection_thread:
                 self.detection_thread.set_model(self.model)
-                print(f"DEBUG: Model loaded and set in thread: {self.model_path}")
             
             self.status_label.setText(self.texts["model_loaded"].format(self.model_path))
             
@@ -3758,17 +3757,6 @@ class VideoAnnotator(QMainWindow):
         
         if self.sam2_refinement_mode:
             # Activate SAM 
-            self.sam_button.setStyleSheet("""
-                    QPushButton {
-                        padding: 3px 8px;
-                        border-radius: 4px;
-                        border: 1px solid #5c9eff;
-                        background-color: #5c9eff;
-                        color: white;
-                        min-width: 23px;
-                        min-height: 23px;
-                    }
-                """)
             self.set_status_message("sam2_refinement_on")
             
             # Create box for SAM - format as list of lists [[x1, y1, x2, y2]]
@@ -3787,17 +3775,6 @@ class VideoAnnotator(QMainWindow):
         else:
             # Deactivate SAM
             self.current_bb_for_refinement = None
-            self.sam_button.setStyleSheet("""QPushButton {
-                                            padding: 3px 8px;
-                                            border-radius: 4px;
-                                            border: 1px solid #aaa;
-                                            background-color: #f0f0f0;
-                                            color: black;
-                                            min-width: 23px;
-                                            min-height: 23px;
-                                          } 
-                                          """)
-            
             self.set_status_message("sam2_refinement_off")
 
             sam_frame = self._get_frame_for_sam()

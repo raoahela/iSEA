@@ -14,7 +14,7 @@ class DetectionsDockWidget(QDockWidget):
         super().__init__(main_window.texts["history"], main_window)
         self.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | 
                         Qt.DockWidgetArea.RightDockWidgetArea)
-        self.language = "pt" 
+        self.language = "en" 
         self.texts = TEXTS[self.language] 
         self.main = main_window
 
@@ -25,7 +25,7 @@ class DetectionsDockWidget(QDockWidget):
         main_layout.setContentsMargins(5, 5, 5, 5)
 
         # Group of filters
-        self.filter_group = QGroupBox("Filtrar Detecções")
+        self.filter_group = QGroupBox(self.texts["filter_detection"])
         filter_layout = QHBoxLayout(self.filter_group)
         
         # Labels with text that can be updated
@@ -52,7 +52,7 @@ class DetectionsDockWidget(QDockWidget):
         self.confidence_input.setDecimals(2)
         
         # Filter button
-        self.filter_button = QPushButton("Filtrar")
+        self.filter_button = QPushButton(self.texts["filter"])  
         self.filter_button.clicked.connect(self.apply_filters)
         
         # Add widgets to the layout using instance variables
