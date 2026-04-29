@@ -9,7 +9,6 @@ import traceback
 from datetime import datetime, timedelta
 import random
 import csv
-from datetime import datetime
 import platform
 import getpass
 import torch
@@ -17,7 +16,6 @@ import numpy as np
 from collections import defaultdict 
 from ultralytics import YOLO
 from pathlib import Path
-import shutil
 from PyQt6 import QtCore
 from PyQt6.QtGui import (QPixmap, QImage, QIcon, QPainter, QPen, QAction, 
                          QKeySequence, QColor, QPalette, QDesktopServices)
@@ -37,7 +35,7 @@ from .detection_thread import DetectionThread
 from .training_wizard import TrainingWizard
 from .sam2_thread import SAM2Thread
 from .taxonomy_enrichment import TaxonomyEnrichmentDialog
-from .utils import resource_path 
+from .utils import resource_path
 
 
 class VideoAnnotator(QMainWindow):
