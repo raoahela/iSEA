@@ -1,4 +1,4 @@
-# iSEA: Intelligent Seafloor & Animal Image Annotator
+# iSEA: Intelligent Seafloor & Animal Image Annotator (WORK IN PROGRESS)
 ## Exploring the deep sea with intelligence
 ---
 
