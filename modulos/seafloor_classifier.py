@@ -7,6 +7,8 @@ Classes: Sedimento, Coral_Fragmento, Coral_Vivo
 import cv2
 import os
 import shutil
+import colorsys
+import json
 import numpy as np
 from pathlib import Path
 from collections import Counter
@@ -34,13 +36,10 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QPushButton, QProgressBar, QTextEdit, QMessageBox,
                              QComboBox, QSpinBox, QDoubleSpinBox, QFormLayout,
                              QDialogButtonBox, QFileDialog, QGroupBox, QApplication,
-                             QGridLayout, QScrollArea, QWidget, QListWidget, QListWidgetItem)
-from PyQt6.QtGui import QImage, QPixmap
+                             QGridLayout, QScrollArea, QWidget, QListWidget, QListWidgetItem,
+                             QLineEdit, QColorDialog)
+from PyQt6.QtGui import QImage, QPixmap, QColor, QIcon
 
-
-# =============================================================================
-# CENTER CROP TO 299 (NOVO - de image_clustering2.py)
-# =============================================================================
 
 class CenterCropTo299:
     """Crop central para 299×299, removendo bordas escuras."""
@@ -93,7 +92,7 @@ class CenterCropTo299:
 
 
 # =============================================================================
-# COLOR NORMALIZATION (atualizado: agora DEPOIS do labeling)
+# COLOR NORMALIZATION 
 # =============================================================================
 
 class ColorNormalizer:
@@ -272,7 +271,7 @@ class EntropyClassifier:
 
 
 # =============================================================================
-# SEMI-AUTOMATIC LABELER - COM INTERAÇÃO REAL VIA QT
+# SEMI-AUTOMATIC LABELER 
 # =============================================================================
 
 class SemiAutoLabeler:
@@ -486,7 +485,7 @@ class SemiAutoLabeler:
 
 
 # =============================================================================
-# INTERACTIVE LABELING DIALOG (Qt-based)
+# INTERACTIVE LABELING DIALOG 
 # =============================================================================
 
 class InteractiveLabelingDialog(QDialog):
@@ -677,7 +676,7 @@ class InteractiveLabelingDialog(QDialog):
 
 
 # =============================================================================
-# FAST DATASET & DATALOADER (atualizado: SEM resize, imagens já 299×299)
+# FAST DATASET & DATALOADER 
 # =============================================================================
 
 class FastImageDataset(Dataset):
@@ -704,7 +703,7 @@ class FastImageDataset(Dataset):
 
 
 # =============================================================================
-# FAST INCEPTIONV3 CLASSIFIER (atualizado: SEM resize no transform)
+# FAST INCEPTIONV3 CLASSIFIER 
 # =============================================================================
 
 class FastInceptionV3Classifier:
@@ -927,7 +926,7 @@ class FastInceptionV3Classifier:
 
 
 # =============================================================================
-# HIERARCHICAL CLASSIFIER (NOVO - de image_clustering2.py)
+# HIERARCHICAL CLASSIFIER 
 # =============================================================================
 
 class HierarchicalClassifier:
@@ -981,40 +980,89 @@ class HierarchicalClassifier:
 
 
 # =============================================================================
-# MAIN SEAFLOOR CLASSIFICATION CLASS (ATUALIZADO)
+# MAIN SEAFLOOR CLASSIFICATION CLASS 
 # =============================================================================
 
 class SeafloorClassifier:
-    CLASS_NAMES = ["Sedimento", "Coral_Fragmento", "Coral_Vivo"]
-    COLORS = {
+    """
+    Classificador de fundo marinho com classes dinâmicas.
+
+    Classes fixas (atalhos de teclado):
+        S → Sedimento
+        F → Coral_Fragmento  
+        R → Coral_Vivo
+
+    Classes customizadas (atalhos numéricos):
+        1, 2, 3... 9, 0 → adicionadas pelo usuário via menu
+    """
+
+    # Classes fixas e seus atalhos
+    FIXED_CLASSES = {
+        "S": "Sedimento",
+        "F": "Coral_Fragmento", 
+        "R": "Coral_Vivo"
+    }
+
+    FIXED_COLORS = {
         "Sedimento": "#8B4513",
         "Coral_Fragmento": "#FF8C00",
         "Coral_Vivo": "#00CED1"
     }
 
+    # Atalhos disponíveis para classes customizadas
+    CUSTOM_SHORTCUTS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]
+
     def __init__(self, n_clusters=3, max_examples=None,
                  normalize_colors=True, reference_path=None,
                  n_examples_per_class=10, use_augmentation=True,
                  fast_mode=True, output_dir="seafloor_output",
-                 crop_to_299=True,           # NOVO
-                 crop_ratio=0.85,            # NOVO
-                 use_hierarchical=False,      # NOVO
-                 entropy_margin=0.3):         # NOVO
+                 crop_to_299=True,
+                 crop_ratio=0.85,
+                 use_hierarchical=False,
+                 entropy_margin=0.3,
+                 custom_classes=None,        # NOVO: lista de nomes
+                 custom_colors=None):          # NOVO: dict nome→cor
+        """
+        Args:
+            custom_classes: lista de nomes de classes adicionais (ex: ["Areia", "Rocha"])
+            custom_colors: dict com cores para classes customizadas (ex: {"Areia": "#FFD700"})
+        """
 
-        self.n_clusters = n_clusters
+        # Inicializar classes fixas
+        self.fixed_class_names = list(self.FIXED_CLASSES.values())
+        self.fixed_colors = dict(self.FIXED_COLORS)
+
+        # Inicializar classes customizadas
+        self.custom_classes = {}  # {atalho: nome}  ex: {"1": "Areia", "2": "Rocha"}
+        self.custom_colors = {}   # {nome: cor}     ex: {"Areia": "#FFD700"}
+
+        if custom_classes:
+            for i, name in enumerate(custom_classes):
+                if i < len(self.CUSTOM_SHORTCUTS):
+                    shortcut = self.CUSTOM_SHORTCUTS[i]
+                    self.custom_classes[shortcut] = name
+                    if custom_colors and name in custom_colors:
+                        self.custom_colors[name] = custom_colors[name]
+                    else:
+                        self.custom_colors[name] = self._generate_color(name)
+
+        # Lista completa de classes para o classificador
+        self.class_names = self.fixed_class_names + list(self.custom_classes.values())
+        self.class_colors = {**self.fixed_colors, **self.custom_colors}
+
+        # Atualizar n_clusters
+        self.n_clusters = len(self.class_names)
+
+        # ... resto do __init__ existente (max_examples, normalize_colors, etc.) ...
         self.max_examples = max_examples
         self.normalize_colors = normalize_colors
         self.n_examples_per_class = n_examples_per_class
         self.use_augmentation = use_augmentation
         self.fast_mode = fast_mode
         self.output_dir = Path(output_dir)
-        
-        # NOVO: Crop config
         self.crop_to_299 = crop_to_299
         self.crop_ratio = crop_ratio
         self.cropper = CenterCropTo299(crop_ratio=crop_ratio) if crop_to_299 else None
-        
-        # NOVO: Hierarchical classifier config
         self.use_hierarchical = use_hierarchical
         self.entropy_margin = entropy_margin
 
@@ -1024,46 +1072,254 @@ class SeafloorClassifier:
 
         self.labeler = SemiAutoLabeler(n_examples_per_class=n_examples_per_class)
         self.trained_classifier = None
-        self.class_names = self.CLASS_NAMES
-        
-        # NOVO: Entropy classifier
+
+        # Atualizar entropy classifier com classes dinâmicas
         self.entropy_classifier = EntropyClassifier(
             thresholds=(6.471, 6.980),
-            class_names=self.CLASS_NAMES
+            class_names=self.class_names
         )
         self.hierarchical_classifier = None
 
+        # Criar diretórios
         self.output_dir.mkdir(exist_ok=True)
         for sub in ["clusters", "normalized", "supervised", "pca_plots", "cropped"]:
             (self.output_dir / sub).mkdir(exist_ok=True)
-        for i in range(n_clusters):
+        self._refresh_cluster_dirs()
+
+    # -------------------------------------------------------------------------
+    # MÉTODOS NOVOS PARA GERENCIAMENTO DE CLASSES
+    # -------------------------------------------------------------------------
+
+    def _generate_color(self, name):
+        """Gera cor automática baseada no hash do nome."""
+        hue = hash(name) % 360 / 360.0
+        rgb = colorsys.hsv_to_rgb(hue, 0.8, 0.9)
+        return '#{:02x}{:02x}{:02x}'.format(int(rgb[0]*255), int(rgb[1]*255), int(rgb[2]*255))
+
+    def _refresh_cluster_dirs(self):
+        """Atualiza diretórios de clusters para número atual de classes."""
+        for i in range(self.n_clusters):
             (self.output_dir / "clusters" / f"cluster{i}").mkdir(exist_ok=True)
             (self.output_dir / "supervised" / f"class{i}").mkdir(exist_ok=True)
 
-    def load_images_from_folder(self, folder_path):
-        valid_extensions = {'.jpg', '.jpeg', '.png'}
-        paths = [f for f in os.listdir(folder_path)
-                 if Path(f).suffix.lower() in valid_extensions]
+    def get_class_by_shortcut(self, shortcut):
+        """
+        Retorna o nome da classe para um atalho de teclado.
 
-        if len(paths) == 0:
-            raise ValueError(f"No images found in '{folder_path}'")
+        Args:
+            shortcut: str - "S", "F", "R", "1", "2", ... "9", "0"
 
-        if self.max_examples:
-            paths = paths[:self.max_examples]
+        Returns:
+            str: nome da classe ou None se atalho inválido
+        """
+        shortcut = shortcut.upper() if shortcut in ["s", "f", "r"] else shortcut
 
-        images_raw = []
-        images_rgb = []
-        image_names = []
+        if shortcut in self.FIXED_CLASSES:
+            return self.FIXED_CLASSES[shortcut]
 
-        for name in paths:
-            img = cv2.imread(os.path.join(folder_path, name))
-            if img is None:
-                continue
-            images_raw.append(img.copy())
-            images_rgb.append(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-            image_names.append(name)
+        if shortcut in self.custom_classes:
+            return self.custom_classes[shortcut]
 
-        return images_raw, images_rgb, image_names
+        return None
+
+    def get_shortcut_for_class(self, class_name):
+        """Retorna o atalho para uma classe (ex: "Sedimento" → "S")."""
+        # Verificar fixas
+        for shortcut, name in self.FIXED_CLASSES.items():
+            if name == class_name:
+                return shortcut
+        # Verificar customizadas
+        for shortcut, name in self.custom_classes.items():
+            if name == class_name:
+                return shortcut
+        return None
+
+    def add_custom_class(self, name, color=None):
+        """
+        Adiciona nova classe customizada.
+
+        Args:
+            name: nome da nova classe
+            color: cor opcional (hex), senão gera automática
+
+        Returns:
+            tuple: (sucesso: bool, atalho: str ou None, mensagem: str)
+        """
+        # Verificar se nome já existe
+        if name in self.class_names:
+            return False, None, f"Classe '{name}' já existe!"
+
+        # Verificar se há atalho disponível
+        available = [s for s in self.CUSTOM_SHORTCUTS if s not in self.custom_classes]
+        if not available:
+            return False, None, "Limite de 10 classes customizadas atingido!"
+
+        shortcut = available[0]
+
+        # Adicionar
+        self.custom_classes[shortcut] = name
+        self.custom_colors[name] = color if color else self._generate_color(name)
+
+        # Atualizar listas consolidadas
+        self.class_names = self.fixed_class_names + list(self.custom_classes.values())
+        self.class_colors[name] = self.custom_colors[name]
+        self.n_clusters = len(self.class_names)
+
+        # Atualizar entropy classifier
+        self.entropy_classifier.class_names = self.class_names
+
+        # Criar diretórios
+        self._refresh_cluster_dirs()
+
+        return True, shortcut, f"Classe '{name}' adicionada com atalho '{shortcut}'"
+
+    def remove_custom_class(self, name_or_shortcut):
+        """
+        Remove uma classe customizada.
+
+        Args:
+            name_or_shortcut: nome da classe ou atalho (ex: "Areia" ou "1")
+
+        Returns:
+            tuple: (sucesso: bool, mensagem: str)
+        """
+        # Resolver nome se recebeu atalho
+        name = name_or_shortcut
+        if name_or_shortcut in self.custom_classes:
+            name = self.custom_classes[name_or_shortcut]
+
+        if name not in self.custom_classes.values():
+            return False, f"Classe '{name}' não encontrada ou é fixa (não pode ser removida)"
+
+        # Remover
+        shortcut_to_remove = None
+        for s, n in self.custom_classes.items():
+            if n == name:
+                shortcut_to_remove = s
+                break
+
+        if shortcut_to_remove:
+            del self.custom_classes[shortcut_to_remove]
+
+        self.custom_colors.pop(name, None)
+
+        # Atualizar listas consolidadas
+        self.class_names = self.fixed_class_names + list(self.custom_classes.values())
+        self.n_clusters = len(self.class_names)
+
+        # Atualizar entropy classifier
+        self.entropy_classifier.class_names = self.class_names
+
+        # Reorganizar atalhos (compactar)
+        self._reorganize_shortcuts()
+
+        return True, f"Classe '{name}' removida"
+
+    def _reorganize_shortcuts(self):
+        """Reorganiza atalhos para ficarem sequenciais (1,2,3...)."""
+        classes = list(self.custom_classes.values())
+        self.custom_classes = {}
+        for i, name in enumerate(classes):
+            if i < len(self.CUSTOM_SHORTCUTS):
+                self.custom_classes[self.CUSTOM_SHORTCUTS[i]] = name
+
+        self.class_names = self.fixed_class_names + list(self.custom_classes.values())
+        self.n_clusters = len(self.class_names)
+
+    def list_all_classes(self):
+        """Retorna lista de todas as classes com seus atalhos."""
+        result = []
+        for shortcut, name in self.FIXED_CLASSES.items():
+            result.append({
+                "shortcut": shortcut,
+                "name": name,
+                "color": self.fixed_colors[name],
+                "type": "fixed"
+            })
+        for shortcut, name in self.custom_classes.items():
+            result.append({
+                "shortcut": shortcut,
+                "name": name,
+                "color": self.custom_colors.get(name, "#808080"),
+                "type": "custom"
+            })
+        return result
+
+    def save_config(self, path=None):
+        """Salva configuração atual (classes e cores)."""
+        config = {
+            "fixed_classes": self.FIXED_CLASSES,
+            "fixed_colors": self.fixed_colors,
+            "custom_classes": self.custom_classes,
+            "custom_colors": self.custom_colors,
+            "class_names": self.class_names,
+            "class_colors": self.class_colors,
+            "n_clusters": self.n_clusters,
+            "crop_to_299": self.crop_to_299,
+            "crop_ratio": self.crop_ratio,
+            "normalize_colors": self.normalize_colors,
+            "use_hierarchical": self.use_hierarchical
+        }
+        path = path or (self.output_dir / "classifier_config.json")
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+        return path
+
+    def load_config(self, path):
+        """Carrega configuração salva."""
+        with open(path, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+
+        self.custom_classes = config.get("custom_classes", {})
+        self.custom_colors = config.get("custom_colors", {})
+        self.class_names = config.get("class_names", self.fixed_class_names)
+        self.class_colors = {**self.fixed_colors, **self.custom_colors}
+        self.n_clusters = config.get("n_clusters", len(self.class_names))
+
+        # Atualizar entropy classifier
+        self.entropy_classifier.class_names = self.class_names
+
+        self._refresh_cluster_dirs()
+        return config
+
+    # -------------------------------------------------------------------------
+    # MÉTODO MODIFICADO: predict_single_frame
+    # -------------------------------------------------------------------------
+
+    def predict_single_frame(self, frame_bgr):
+        if self.trained_classifier is None:
+            raise ValueError("Classifier not trained yet!")
+
+        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+
+        if self.crop_to_299 and self.cropper is not None:
+            cropped, _ = self.cropper.crop(frame_bgr)
+            frame_bgr = cropped
+            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+
+        if self.normalize_colors and self.normalizer and self.normalizer.ref_mean is not None:
+            frame_norm_bgr = self.normalizer.normalize(frame_bgr)
+            frame_rgb = cv2.cvtColor(frame_norm_bgr, cv2.COLOR_BGR2RGB)
+
+        preds, confs = self.trained_classifier.predict([frame_rgb], batch_size=1)
+
+        class_id = int(preds[0])
+        confidence = float(confs[0])
+
+        # Garantir que class_id está no range válido
+        if class_id >= len(self.class_names):
+            class_id = len(self.class_names) - 1
+
+        class_name = self.class_names[class_id]
+
+        return {
+            "class_id": class_id,
+            "class_name": class_name,
+            "confidence": confidence,
+            "color": self.class_colors.get(class_name, "#FFFFFF"),
+            "shortcut": self.get_shortcut_for_class(class_name)
+        }
+
 
     def classify_images(self, images_rgb, images_raw, image_names, folder_path=None,
                        parent_widget=None):
@@ -1697,3 +1953,170 @@ class SeafloorClassificationDialog(QDialog):
             self.worker.stop()
             self.worker.wait(1000)
         super().reject()
+
+class SeafloorClassManager(QDialog):
+    """Diálogo para gerenciar categorias do classificador de fundo."""
+
+    classes_changed = pyqtSignal()  # Sinal emitido quando classes mudam
+
+    def __init__(self, classifier, parent=None):
+        super().__init__(parent)
+        self.classifier = classifier
+        self.setWindowTitle("Gerenciar Categorias de Fundo")
+        self.resize(450, 550)
+        self._build_ui()
+        self._refresh_list()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+
+        # Instruções
+        info = QLabel(
+            "<b>Classes fixas:</b> S=Sedimento, F=Fragmento, R=Recife<br>"
+            "<b>Classes custom:</b> atalhos 1-9, 0<br>"
+            "Máximo 10 classes adicionais."
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        # Lista de classes
+        layout.addWidget(QLabel("<b>Categorias:</b>"))
+        self.class_list = QListWidget()
+        self.class_list.setStyleSheet("""
+            QListWidget {
+                font-size: 13px;
+            }
+            QListWidget::item {
+                padding: 8px;
+                border-bottom: 1px solid #ddd;
+            }
+        """)
+        layout.addWidget(self.class_list)
+
+        # Adicionar nova
+        add_group = QGroupBox("Adicionar Nova Categoria")
+        add_layout = QFormLayout(add_group)
+
+        self.new_name = QLineEdit()
+        self.new_name.setPlaceholderText("Ex: Areia, Rocha, Algá...")
+        add_layout.addRow("Nome:", self.new_name)
+
+        color_layout = QHBoxLayout()
+        self.color_preview = QLabel("    ")
+        self.color_preview.setFixedSize(30, 30)
+        self.color_preview.setStyleSheet("background-color: #808080; border: 1px solid #333;")
+        self.selected_color = None
+
+        color_btn = QPushButton("Escolher Cor")
+        color_btn.clicked.connect(self._choose_color)
+        color_layout.addWidget(self.color_preview)
+        color_layout.addWidget(color_btn)
+        color_layout.addStretch()
+        add_layout.addRow("Cor:", color_layout)
+
+        add_btn = QPushButton("Adicionar")
+        add_btn.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
+        add_btn.clicked.connect(self._add_class)
+        add_layout.addRow(add_btn)
+
+        layout.addWidget(add_group)
+
+        # Botão remover
+        remove_btn = QPushButton("🗑 Remover Selecionada")
+        remove_btn.setStyleSheet("background-color: #f44336; color: white;")
+        remove_btn.clicked.connect(self._remove_class)
+        layout.addWidget(remove_btn)
+
+        # Fechar
+        layout.addStretch()
+        btn_layout = QHBoxLayout()
+        save_btn = QPushButton("Salvar Configuração")
+        save_btn.clicked.connect(self._save_config)
+        close_btn = QPushButton("Fechar")
+        close_btn.clicked.connect(self.accept)
+        btn_layout.addWidget(save_btn)
+        btn_layout.addStretch()
+        btn_layout.addWidget(close_btn)
+        layout.addLayout(btn_layout)
+
+    def _choose_color(self):
+        color = QColorDialog.getColor()
+        if color.isValid():
+            self.selected_color = color.name()
+            self.color_preview.setStyleSheet(
+                f"background-color: {self.selected_color}; border: 1px solid #333;"
+            )
+
+    def _add_class(self):
+        name = self.new_name.text().strip()
+        if not name:
+            QMessageBox.warning(self, "Erro", "Digite um nome para a categoria")
+            return
+
+        success, shortcut, msg = self.classifier.add_custom_class(
+            name, self.selected_color
+        )
+
+        if success:
+            self._refresh_list()
+            self.new_name.clear()
+            self.selected_color = None
+            self.color_preview.setStyleSheet("background-color: #808080; border: 1px solid #333;")
+            self.classes_changed.emit()
+        else:
+            QMessageBox.warning(self, "Erro", msg)
+
+    def _remove_class(self):
+        current = self.class_list.currentItem()
+        if not current:
+            return
+
+        # Extrair nome da string formatada
+        text = current.text()
+        # Formato: "[1] Areia (#FFD700)" ou "[S] Sedimento (#8B4513) [FIXO]"
+        if "[FIXO]" in text:
+            QMessageBox.warning(self, "Erro", "Classes fixas (S, F, R) não podem ser removidas!")
+            return
+
+        # Pegar o nome entre ] e (
+        import re
+        match = re.search(r'\] (.+?) \(', text)
+        if match:
+            name = match.group(1)
+            reply = QMessageBox.question(self, "Confirmar", 
+                                       f"Remover categoria '{name}'?")
+            if reply == QMessageBox.StandardButton.Yes:
+                success, msg = self.classifier.remove_custom_class(name)
+                if success:
+                    self._refresh_list()
+                    self.classes_changed.emit()
+                else:
+                    QMessageBox.warning(self, "Erro", msg)
+
+    def _refresh_list(self):
+        self.class_list.clear()
+        classes = self.classifier.list_all_classes()
+
+        for cls in classes:
+            shortcut = cls["shortcut"]
+            name = cls["name"]
+            color = cls["color"]
+            type_ = cls["type"]
+
+            # Criar item com ícone de cor
+            item_text = f"[{shortcut}] {name} ({color})"
+            if type_ == "fixed":
+                item_text += " [FIXO]"
+
+            item = QListWidgetItem(item_text)
+
+            # Ícone colorido
+            pixmap = QPixmap(16, 16)
+            pixmap.fill(QColor(color))
+            item.setIcon(QIcon(pixmap))
+
+            self.class_list.addItem(item)
+
+    def _save_config(self):
+        path = self.classifier.save_config()
+        QMessageBox.information(self, "Salvo", f"Configuração salva em:\n{path}")

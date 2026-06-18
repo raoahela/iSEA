@@ -317,7 +317,7 @@ class DetectionsDockWidget(QDockWidget):
         text = f"{timestamp} - {class_name}" if timestamp else class_name
         if detection.get("type") == "manual":
             text += " (manual)"
-        if detection.get("type") == "segmentation":
+        elif detection.get("type") == "segmentation":
             text += " (segmentation)"
         else:
             text += f" ({confidence:.2f})" if confidence else ""

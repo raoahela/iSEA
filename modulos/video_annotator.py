@@ -78,6 +78,18 @@ class VideoAnnotator(QMainWindow):
         self.recorded_detections = [] 
         self.best_confidence = {}  
         self.init_ui()
+        self.seafloor_classifier = None
+        self.seafloor_thread = None
+        self.seafloor_enabled = False
+        self.segmentation_annotations = []
+        self.current_seafloor_class = None       # Classe ativa (nome)
+        self.current_seafloor_shortcut = None    # Atalho ativo (S/F/R/1/2...)
+        self.seafloor_annotation_frames = []     # Frames coletados do segmento atual
+        self.seafloor_annotation_start_frame = None
+        self.seafloor_frame_save_interval = 30  # Salvar frame a cada N frames
+        self.seafloor_frame_counter = 0
+        self.seafloor_collecting = False
+        self.seafloor_training_dir = Path("seafloor_training_data")
         self.create_menu()
         self.apply_light_style()  
         self.detection_every_n_frames = 0
@@ -99,10 +111,6 @@ class VideoAnnotator(QMainWindow):
         self.pending_detection_result = None
         self.detection_mutex = QMutex() 
         self.detection_frame_buffer = []
-        self.seafloor_classifier = None
-        self.seafloor_thread = None
-        self.seafloor_enabled = False
-        self.segmentation_annotations = []
         
         self.taxon_grid = None
         self.taxon_grid = TaxonGrid(self)
@@ -627,19 +635,57 @@ class VideoAnnotator(QMainWindow):
         train_seg_action.triggered.connect(self.train_segmentation_model)
         training_menu.addAction(train_seg_action)
 
-        # Seafloor Classification Menu (NOVO)
+        # Seafloor Classification Menu 
         seafloor_menu = menubar.addMenu(self.texts.get("seafloor_menu", "Seafloor"))
-        
-        classify_folder_action = QAction(self.texts.get("seafloor_classify_folder", "Classify Image Folder"), self)
+
+        # Classificar pasta (existente)
+        classify_folder_action = QAction(self.texts.get("seafloor_classify_folder", "Classificar Pasta"), self)
         classify_folder_action.triggered.connect(self.open_seafloor_dialog)
         seafloor_menu.addAction(classify_folder_action)
-        
-        classify_video_action = QAction(self.texts.get("seafloor_classify_frame", "Classify Current Frame"), self)
-        classify_video_action.setShortcut(QKeySequence("F"))
-        classify_video_action.triggered.connect(self.classify_current_frame)
-        seafloor_menu.addAction(classify_video_action)
-        
-        toggle_realtime_action = QAction(self.texts.get("seafloor_realtime", "Real-time Classification"), self)
+
+        # Classificar frame atual 
+        classify_frame_action = QAction(self.texts.get("seafloor_classify_frame", "Classificar Frame Atual"), self)
+        classify_frame_action.setShortcut(QKeySequence("Ctrl+F"))  
+        classify_frame_action.triggered.connect(self.classify_current_frame)
+        seafloor_menu.addAction(classify_frame_action)
+
+        # Gerenciar categorias
+        manage_action = QAction("Gerenciar Categorias...", self)
+        manage_action.triggered.connect(self.open_seafloor_class_manager)
+        seafloor_menu.addAction(manage_action)
+
+        seafloor_menu.addSeparator()
+
+        # Seção de Classificação Rápida durante vídeo
+        seafloor_menu.addSection("Classificação Rápida (durante vídeo)")
+
+        # Classes: S, F, R
+        for key, class_name in [("S", "Sedimento"), ("F", "Coral_Fragmento"), ("R", "Coral_Vivo")]:
+            action = QAction(f"{key} - {class_name}", self)
+            action.setShortcut(QKeySequence(key))
+            action.triggered.connect(lambda checked, c=class_name, k=key: self.quick_classify_seafloor(c, k))
+            seafloor_menu.addAction(action)
+
+        # Classes customizadas: 1-9, 0 (atualizadas dinamicamente)
+        self._seafloor_custom_actions = []  # Guardar referências para atualizar
+        self._update_seafloor_custom_menu(seafloor_menu)
+
+        # Parar anotação de fundo
+        seafloor_menu.addSeparator()
+        self._seafloor_stop_action = QAction("Parar Anotação (Shift+S)", self)
+        self._seafloor_stop_action.setShortcut(QKeySequence("Shift+S"))
+        self._seafloor_stop_action.triggered.connect(self.stop_seafloor_annotation)
+        seafloor_menu.addAction(self._seafloor_stop_action)
+
+        seafloor_menu.addSeparator()
+
+        # Treinar com dados coletados
+        train_action = QAction("Treinar com Dados Coletados", self)
+        train_action.triggered.connect(self.train_seafloor_from_collected)
+        seafloor_menu.addAction(train_action)
+
+        # Classificação em tempo real 
+        toggle_realtime_action = QAction(self.texts.get("seafloor_realtime", "Classificação em Tempo Real"), self)
         toggle_realtime_action.setCheckable(True)
         toggle_realtime_action.triggered.connect(self.toggle_seafloor_realtime)
         seafloor_menu.addAction(toggle_realtime_action)
@@ -1326,6 +1372,12 @@ class VideoAnnotator(QMainWindow):
 
         try:
             ret, frame = self.cap.read()
+            if getattr(self, 'seafloor_collecting', False) and self.current_seafloor_class:
+                self.seafloor_frame_counter += 1
+
+                if self.seafloor_frame_counter % self.seafloor_frame_save_interval == 0:
+                    # Salvar frame atual para treinamento
+                    self._save_seafloor_training_frame()
             if not ret:
                 if self.live_mode:
                     self.start_camera()
@@ -4389,7 +4441,229 @@ class VideoAnnotator(QMainWindow):
         confidence = result["confidence"]
         self.status_label.setText(self.texts.get("seafloor_label", "Seafloor: {} ({:.2f})").format(class_name, confidence))
 
-    
+    def _update_seafloor_custom_menu(self, menu=None):
+        """Atualiza o menu com classes customizadas do classificador."""
+        if menu is None:
+            # Encontrar menu Fundo Marinho
+            menubar = self.menuBar()
+            for action in menubar.actions():
+                if action.text() == self.texts.get("seafloor_menu", "Seafloor"):
+                    menu = action.menu()
+                    break
+
+        if not menu:
+            return
+
+        # Remover ações customizadas antigas
+        for action in self._seafloor_custom_actions:
+            menu.removeAction(action)
+        self._seafloor_custom_actions = []
+
+        # Adicionar classes customizadas atuais
+        if self.seafloor_classifier:
+            for cls_info in self.seafloor_classifier.list_all_classes():
+                if cls_info["type"] == "custom":
+                    shortcut = cls_info["shortcut"]
+                    name = cls_info["name"]
+                    action = QAction(f"{shortcut} - {name}", self)
+                    action.setShortcut(QKeySequence(shortcut))
+                    action.triggered.connect(
+                        lambda checked, c=name, k=shortcut: self.quick_classify_seafloor(c, k)
+                    )
+                    # Inserir antes do separador "Parar Anotação"
+                    menu.insertAction(self._seafloor_stop_action, action)
+                    self._seafloor_custom_actions.append(action)
+
+    def quick_classify_seafloor(self, class_name, shortcut):
+        """
+        Atalho rápido para classificar fundo durante anotação de vídeo.
+        S = Sedimento, F = Fragmento, R = Recife, 1-9,0 = custom
+        """
+        if not self.cap or not self.cap.isOpened():
+            self.status_label.setText("Nenhum vídeo carregado!")
+            return
+
+        # Se já estava anotando outra classe, salvar o trecho anterior
+        if self.current_seafloor_class and self.current_seafloor_class != class_name:
+            self._save_seafloor_annotation_segment()
+
+        # Iniciar nova anotação
+        self.current_seafloor_class = class_name
+        self.current_seafloor_shortcut = shortcut
+        self.seafloor_annotation_start_frame = self.current_frame_num
+        self.seafloor_frame_counter = 0
+
+        self.status_label.setText(f"Fundo [{shortcut}]: {class_name} (coletando...)")
+
+        # Ativar flag para coleta automática de frames durante playback
+        self.seafloor_collecting = True
+
+        # Forçar repaint do video_label para mostrar indicador
+        if hasattr(self, 'video_label'):
+            self.video_label.update()
+
+    def stop_seafloor_annotation(self):
+        """Para a coleta de frames e salva o último segmento."""
+        if self.current_seafloor_class:
+            self._save_seafloor_annotation_segment()
+            self.current_seafloor_class = None
+            self.current_seafloor_shortcut = None
+            self.seafloor_collecting = False
+            self.status_label.setText("Anotação de fundo finalizada")
+
+            # Forçar repaint para remover indicador
+            if hasattr(self, 'video_label'):
+                self.video_label.update()
+
+    def _save_seafloor_annotation_segment(self):
+        """Finaliza anotação do trecho anterior e salva metadados."""
+        if not self.seafloor_annotation_frames:
+            return
+
+        # Salvar metadados do segmento em CSV
+        segment_file = self.seafloor_training_dir / "annotations.csv"
+        segment_file.parent.mkdir(parents=True, exist_ok=True)
+
+        import csv
+        file_exists = segment_file.exists()
+        with open(segment_file, 'a', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=[
+                "video_path", "start_frame", "end_frame", 
+                "class", "shortcut", "frames_count", "start_timestamp", "end_timestamp"
+            ])
+            if not file_exists:
+                writer.writeheader()
+
+            start_frame = self.seafloor_annotation_frames[0]["frame_number"]
+            end_frame = self.seafloor_annotation_frames[-1]["frame_number"]
+            start_timestamp = self.get_video_timestamp(start_frame)
+            end_timestamp = self.get_video_timestamp(end_frame)
+
+            writer.writerow({
+                "video_path": self.video_path or "Live",
+                "start_frame": start_frame,
+                "end_frame": end_frame,
+                "class": self.current_seafloor_class,
+                "shortcut": self.current_seafloor_shortcut or "",
+                "frames_count": len(self.seafloor_annotation_frames),
+                "start_timestamp": start_timestamp,
+                "end_timestamp": end_timestamp
+            })
+
+        self.status_label.setText(
+            f"Segmento salvo: {len(self.seafloor_annotation_frames)} frames de {self.current_seafloor_class}"
+        )
+
+        # Limpar frames do segmento anterior
+        self.seafloor_annotation_frames = []
+
+    def _save_seafloor_training_frame(self):
+        """Salva frame atual para dataset de treinamento do fundo."""
+        if not hasattr(self, 'current_frame') or self.current_frame is None:
+            return
+
+        if not self.current_seafloor_class:
+            return
+
+        # Criar diretório estruturado por classe
+        class_dir = self.seafloor_training_dir / self.current_seafloor_class
+        class_dir.mkdir(parents=True, exist_ok=True)
+
+        # Nome do arquivo com timestamp e frame number
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        video_name = Path(self.video_path).stem if self.video_path else "live"
+        filename = f"{video_name}_frame{self.current_frame_num}_{timestamp}.jpg"
+
+        filepath = class_dir / filename
+        cv2.imwrite(str(filepath), self.current_frame)
+
+        # Registrar metadados
+        self.seafloor_annotation_frames.append({
+            "frame_number": self.current_frame_num,
+            "class": self.current_seafloor_class,
+            "shortcut": self.current_seafloor_shortcut,
+            "filepath": str(filepath),
+            "video_path": self.video_path or "Live",
+            "timestamp": self.get_video_timestamp(self.current_frame_num)
+        })
+
+        # Atualizar status a cada 5 frames salvos (evitar spam)
+        total_saved = len(self.seafloor_annotation_frames)
+        if total_saved % 5 == 0:
+            self.status_label.setText(
+                f"Fundo [{self.current_seafloor_shortcut}]: {self.current_seafloor_class} | "
+                f"{total_saved} frames coletados"
+            )
+
+    def open_seafloor_class_manager(self):
+        """Abre diálogo para gerenciar categorias do classificador de fundo."""
+        if self.seafloor_classifier is None:
+            self.seafloor_classifier = SeafloorClassifier(
+                n_clusters=3,
+                normalize_colors=False,
+                fast_mode=True
+            )
+
+        from .seafloor_classifier import SeafloorClassManager
+        dialog = SeafloorClassManager(self.seafloor_classifier, self)
+
+        # Conectar sinal para atualizar menu quando classes mudarem
+        dialog.classes_changed.connect(lambda: self._update_seafloor_custom_menu())
+
+        dialog.exec()
+
+        # Atualizar status com classes atuais
+        classes_str = ", ".join(self.seafloor_classifier.class_names)
+        self.status_label.setText(f"Categorias de fundo: {classes_str}")
+
+    def train_seafloor_from_collected(self):
+        """Treina classificador com frames coletados durante anotação de vídeo."""
+        # Verificar se há dados coletados
+        if not self.seafloor_training_dir.exists():
+            QMessageBox.warning(self, "Aviso", 
+                "Nenhum dado coletado. Use os atalhos S/F/R/1-9/0 durante o vídeo primeiro.")
+            return
+
+        # Verificar se há imagens em pelo menos 2 classes
+        class_dirs = [d for d in self.seafloor_training_dir.iterdir() 
+                     if d.is_dir() and any(d.glob("*.jpg"))]
+
+        if len(class_dirs) < 2:
+            QMessageBox.warning(self, "Aviso",
+                f"Dados insuficientes. Encontradas {len(class_dirs)} classes com imagens. "
+                "São necessárias pelo menos 2.")
+            return
+
+        # Inicializar classificador se necessário
+        if self.seafloor_classifier is None:
+            self.seafloor_classifier = SeafloorClassifier(
+                class_names=[d.name for d in class_dirs],
+                normalize_colors=False,
+                fast_mode=True
+            )
+
+        try:
+            self.status_label.setText("Treinando classificador com dados coletados...")
+            QApplication.processEvents()
+
+            results = self.seafloor_classifier.train_from_collected_data(
+                data_dir=str(self.seafloor_training_dir),
+                min_samples_per_class=5
+            )
+
+            self.status_label.setText("Treinamento concluído!")
+
+            # Mostrar resultados
+            QMessageBox.information(self, "Concluído", 
+                f"Modelo treinado com sucesso!\n"
+                f"Classes: {', '.join(self.seafloor_classifier.class_names)}\n"
+                f"Dados salvos em: {self.seafloor_training_dir}")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Erro", f"Falha no treinamento: {str(e)}")
+            import traceback
+            traceback.print_exc()
+ 
     def closeEvent(self, event):
         # Stop SAM2 thread
         if hasattr(self, 'sam2_thread') and self.sam2_thread is not None:
@@ -4410,5 +4684,8 @@ class VideoAnnotator(QMainWindow):
         if hasattr(self, 'seafloor_thread') and self.seafloor_thread:
             self.seafloor_thread.stop()
             self.seafloor_thread.wait(1000)
+
+        if self.current_seafloor_class:
+            self._save_seafloor_annotation_segment()
         
         event.accept()

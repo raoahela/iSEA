@@ -618,6 +618,60 @@ class VideoLabel(QLabel):
             )
             painter.drawRect(rect)
 
+        main_window = self.window()
+        if hasattr(main_window, 'current_seafloor_class') and main_window.current_seafloor_class:
+            # Banner no topo esquerdo
+            painter.setPen(Qt.PenStyle.NoPen)
+
+            # Cor baseada na classe atual
+            class_name = main_window.current_seafloor_class
+            shortcut = getattr(main_window, 'current_seafloor_shortcut', '?')
+
+            # Usar cor do classificador se disponível
+            color = QColor(0, 100, 200, 200)  # Default azul
+            if (hasattr(main_window, 'seafloor_classifier') and 
+                main_window.seafloor_classifier and
+                class_name in main_window.seafloor_classifier.class_colors):
+                hex_color = main_window.seafloor_classifier.class_colors[class_name]
+                color = QColor(hex_color)
+                color.setAlpha(200)
+
+            painter.setBrush(color)
+
+            # Banner principal
+            banner_rect = QRect(video_rect.left() + 10, video_rect.top() + 10, 320, 45)
+            painter.drawRoundedRect(banner_rect, 10, 10)
+
+            # Texto: [S] Sedimento
+            painter.setPen(QPen(Qt.GlobalColor.white, 1))
+            font = painter.font()
+            font.setPixelSize(18)
+            font.setBold(True)
+            painter.setFont(font)
+
+            text = f"[{shortcut}] {class_name}"
+            painter.drawText(banner_rect, Qt.AlignmentFlag.AlignCenter, text)
+
+            # Contador de frames coletados no segmento atual
+            if hasattr(main_window, 'seafloor_annotation_frames'):
+                count = len(main_window.seafloor_annotation_frames)
+                if count > 0:
+                    counter_rect = QRect(video_rect.left() + 10, video_rect.top() + 62, 160, 22)
+                    painter.setBrush(QColor(0, 0, 0, 160))
+                    painter.drawRoundedRect(counter_rect, 6, 6)
+                    painter.setPen(QPen(Qt.GlobalColor.white, 1))
+                    font.setPixelSize(12)
+                    font.setBold(False)
+                    painter.setFont(font)
+                    painter.drawText(counter_rect, Qt.AlignmentFlag.AlignCenter,
+                                    f"Frames: {count}")
+
+            # Indicador "gravando" piscante
+            if hasattr(main_window, 'seafloor_collecting') and main_window.seafloor_collecting:
+                dot_rect = QRect(video_rect.left() + 340, video_rect.top() + 22, 16, 16)
+                painter.setBrush(QColor(255, 0, 0, 220))
+                painter.drawEllipse(dot_rect)
+
         painter.end()
 
     def _draw_preview_mask(self, painter, video_rect):

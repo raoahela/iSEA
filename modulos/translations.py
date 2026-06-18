@@ -265,12 +265,12 @@ TEXTS = {
         "recording_saved_title": "Gravação Salva",
         "recording_saved_message": "Vídeo: {}\nDetecções únicas: {}\nFrames salvos: {}\nAnotações: {}",
         "hover_segment_sam2": "Segmentar com SAM",
-                "copy_error": "Erro de Cópia",
+        "copy_error": "Erro de Cópia",
         "copy_failed": "Falha ao copiar:\n{}\n→ {}",
         "error_loading_image": "Erro ao carregar imagem: ",
         "copy_background_error": "Erro ao copiar background {}: {}",
-"hover_segmentation_on": "Segmentação por hover ATIVADA (SAM)",
-                "segmentation_confirmed": "Segmentação: {}",
+        "hover_segmentation_on": "Segmentação por hover ATIVADA (SAM)",
+        "segmentation_confirmed": "Segmentação: {}",
         "sam_no_object": "SAM: Nenhum objeto detectado no ponto",
         "seafloor_label": "Fundo: {} ({:.2f})",
         "seafloor_realtime_on": "Classificação de fundo: ATIVADA",
@@ -281,8 +281,25 @@ TEXTS = {
         "seafloor_classify_folder": "Classificar Pasta de Imagens",
         "seafloor_classify_frame": "Classificar Frame Atual",
         "seafloor_realtime": "Classificação em Tempo Real",
-"hover_segmentation_off": "Segmentação por hover DESATIVADA (SAM)"
+        "hover_segmentation_off": "Segmentação por hover DESATIVADA (SAM)",
+        "seafloor_manage_classes": "Gerenciar Categorias",
+        "seafloor_quick_classify": "Classificação Rápida",
+        "seafloor_stop_annotation": "Parar Anotação",
+        "seafloor_train_collected": "Treinar com Dados Coletados",
+        "seafloor_collecting": "Coletando frames para: {}",
+        "seafloor_segment_saved": "Segmento salvo: {} frames de {}",
+        "seafloor_no_data": "Nenhum dado coletado. Use S/F/R/1-9/0 durante o vídeo.",
+        "seafloor_insufficient_data": "Dados insuficientes. Encontradas {} classes. Mínimo: 2.",
+        "seafloor_class_added": "Categoria '{}' adicionada",
+        "seafloor_class_removed": "Categoria '{}' removida",
+        "seafloor_class_exists": "Categoria '{}' já existe!",
+        "seafloor_min_classes": "Mínimo de 2 categorias necessárias",
+        "seafloor_max_custom": "Limite de 10 classes customizadas atingido!",
+        "seafloor_class_fixed": "Classes fixas (S, F, R) não podem ser removidas!",
+        "seafloor_config_saved": "Configuração salva em: {}"
     },
+
+
     "en": {
         "about_text": (
             "Video Annotation Platform\n\n"
@@ -552,7 +569,7 @@ TEXTS = {
         "recording_saved_message": "Video: {}\nUnique detections: {}\nFrames saved: {}\nAnnotations: {}",
         "hover_segment_sam2": "Segment with SAM",
         "hover_segmentation_on": "Hover segmentation ACTIVATED (SAM)",
-                "segmentation_confirmed": "Segmentation: {}",
+        "segmentation_confirmed": "Segmentation: {}",
         "sam_no_object": "SAM: No object detected at point",
         "seafloor_label": "Seafloor: {} ({:.2f})",
         "seafloor_realtime_on": "Seafloor classification: ON",
@@ -563,6 +580,22 @@ TEXTS = {
         "seafloor_classify_folder": "Classify Image Folder",
         "seafloor_classify_frame": "Classify Current Frame",
         "seafloor_realtime": "Real-time Classification",
-"hover_segmentation_off": "Hover segmentation DEACTIVATED (SAM)"
+        "hover_segmentation_off": "Hover segmentation DEACTIVATED (SAM)",
+        "seafloor_manage_classes": "Manage Categories",
+        "seafloor_quick_classify": "Quick Classification",
+        "seafloor_stop_annotation": "Stop Annotation",
+        "seafloor_train_collected": "Train from Collected Data",
+        "seafloor_collecting": "Collecting frames for: {}",
+        "seafloor_segment_saved": "Segment saved: {} frames of {}",
+        "seafloor_no_data": "No data collected. Use S/F/R/1-9/0 during video first.",
+        "seafloor_insufficient_data": "Insufficient data. Found {} classes. Minimum: 2.",
+        "seafloor_class_added": "Category '{}' added",
+        "seafloor_class_removed": "Category '{}' removed",
+        "seafloor_class_exists": "Category '{}' already exists!",
+        "seafloor_min_classes": "Minimum of 2 categories required",
+        "seafloor_max_custom": "Maximum of 10 custom categories reached!",
+        "seafloor_class_fixed": "Fixed classes (S, F, R) cannot be removed!",
+        "seafloor_config_saved": "Configuration saved to: {}"
+
     }
 }

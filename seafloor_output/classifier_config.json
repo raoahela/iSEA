@@ -1,0 +1,35 @@
+{
+  "fixed_classes": {
+    "S": "Sedimento",
+    "F": "Coral_Fragmento",
+    "R": "Coral_Vivo"
+  },
+  "fixed_colors": {
+    "Sedimento": "#8B4513",
+    "Coral_Fragmento": "#FF8C00",
+    "Coral_Vivo": "#00CED1"
+  },
+  "custom_classes": {
+    "1": "Rodolito"
+  },
+  "custom_colors": {
+    "Rodolito": "#4ce52d"
+  },
+  "class_names": [
+    "Sedimento",
+    "Coral_Fragmento",
+    "Coral_Vivo",
+    "Rodolito"
+  ],
+  "class_colors": {
+    "Sedimento": "#8B4513",
+    "Coral_Fragmento": "#FF8C00",
+    "Coral_Vivo": "#00CED1",
+    "Rodolito": "#4ce52d"
+  },
+  "n_clusters": 4,
+  "crop_to_299": true,
+  "crop_ratio": 0.85,
+  "normalize_colors": false,
+  "use_hierarchical": false
+}
