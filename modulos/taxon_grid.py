@@ -17,7 +17,7 @@ class TaxonGrid(QWidget):
         self.scroll.setWidget(self.grid_widget)
         self.scroll.setWidgetResizable(True)
         self.main_layout.addWidget(self.scroll)
-        self.language = "pt" 
+        self.language = "en" 
         self.texts = TEXTS[self.language]
         self.dark_mode = False
         self.removal_mode = False

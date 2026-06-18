@@ -36,6 +36,11 @@ from .training_wizard import TrainingWizard
 from .sam2_thread import SAM2Thread
 from .taxonomy_enrichment import TaxonomyEnrichmentDialog
 from .utils import resource_path
+from .seafloor_classifier import (
+    SeafloorClassifier, 
+    SeafloorClassificationThread,
+    SeafloorClassificationDialog
+)
 
 
 class VideoAnnotator(QMainWindow):
@@ -86,15 +91,18 @@ class VideoAnnotator(QMainWindow):
         self.dataset_frames = []               
         self.dataset_index = 0    
         self.training_wizard = None 
-        self.sam2_refinement_mode = False  
-        self.current_bb_for_refinement = None      
         self.sam2_thread = None
         self.sam2_masks = {}  
         self.current_sam2_mask = None
+        self.hover_segmentation_mode = False
         self.init_sam2()     
         self.pending_detection_result = None
         self.detection_mutex = QMutex() 
         self.detection_frame_buffer = []
+        self.seafloor_classifier = None
+        self.seafloor_thread = None
+        self.seafloor_enabled = False
+        self.segmentation_annotations = []
         
         self.taxon_grid = None
         self.taxon_grid = TaxonGrid(self)
@@ -176,7 +184,7 @@ class VideoAnnotator(QMainWindow):
         self.detect_button.clicked.connect(self.detect_objects)
         self.toggle_button.clicked.connect(self.toggle_detection)
         self.annotate_button.clicked.connect(self.enable_manual_annotation)
-        self.sam_button.clicked.connect(self.toggle_sam2_refinement)
+        self.sam_button.clicked.connect(self.toggle_hover_segmentation)
         self.save_button.clicked.connect(self.save_annotations)
         self.save_frame_button.clicked.connect(self.save_current_frame_with_annotations)
         self.live_button.clicked.connect(self.toggle_live_mode)
@@ -281,6 +289,13 @@ class VideoAnnotator(QMainWindow):
 
     def set_status_message(self, key, *args):
         self.status_label.setText(self.texts[key].format(*args))
+    def sync_frame_num(self, frame_num=None):
+        """Sincroniza o frame_num entre VideoAnnotator e VideoLabel"""
+        if frame_num is not None:
+            self.current_frame_num = frame_num
+        if hasattr(self, 'video_label') and self.video_label is not None:
+            self.video_label.current_frame_num = self.current_frame_num
+
 
     def show_error_message(self, title_key, message_key, *args):
         QMessageBox.critical(self, self.texts[title_key], self.texts[message_key].format(*args))
@@ -406,8 +421,8 @@ class VideoAnnotator(QMainWindow):
                 border-color: #29B6F6;
             }
             QPushButton:disabled {
-                background-color: #F5FAFC;
-                color: #B0BEC5;
+                background-color:  #E1F5FE;
+                color: #37474F;
                 border-color: #ECEFF1;
             }
             QPushButton:checked {
@@ -576,8 +591,8 @@ class VideoAnnotator(QMainWindow):
         annotation_menu.addAction(manual_action)
 
         sam_action = QAction(self.texts["segment_with_sam2"], self)
-        sam_action.setShortcut(QKeySequence("S"))
-        sam_action.triggered.connect(self.toggle_sam2_refinement)
+        sam_action.setShortcut(QKeySequence("A"))
+        sam_action.triggered.connect(self.toggle_hover_segmentation)
         annotation_menu.addAction(sam_action)
 
         enrich_action = QAction(self.texts["enrich_taxonomy"], self)
@@ -587,7 +602,6 @@ class VideoAnnotator(QMainWindow):
 
         # training menu
         training_menu = menubar.addMenu(self.texts["train"])
-        ("Treino")
 
         create_ds_action = QAction(self.texts["create_dataset"], self)
         create_ds_action.triggered.connect(self.open_training_wizard)
@@ -612,6 +626,23 @@ class VideoAnnotator(QMainWindow):
         train_seg_action = QAction(self.texts["train_segmentation_model"], self)
         train_seg_action.triggered.connect(self.train_segmentation_model)
         training_menu.addAction(train_seg_action)
+
+        # Seafloor Classification Menu (NOVO)
+        seafloor_menu = menubar.addMenu(self.texts.get("seafloor_menu", "Seafloor"))
+        
+        classify_folder_action = QAction(self.texts.get("seafloor_classify_folder", "Classify Image Folder"), self)
+        classify_folder_action.triggered.connect(self.open_seafloor_dialog)
+        seafloor_menu.addAction(classify_folder_action)
+        
+        classify_video_action = QAction(self.texts.get("seafloor_classify_frame", "Classify Current Frame"), self)
+        classify_video_action.setShortcut(QKeySequence("F"))
+        classify_video_action.triggered.connect(self.classify_current_frame)
+        seafloor_menu.addAction(classify_video_action)
+        
+        toggle_realtime_action = QAction(self.texts.get("seafloor_realtime", "Real-time Classification"), self)
+        toggle_realtime_action.setCheckable(True)
+        toggle_realtime_action.triggered.connect(self.toggle_seafloor_realtime)
+        seafloor_menu.addAction(toggle_realtime_action)
 
         # language menu
         lang_menu = menubar.addMenu(self.texts["language"])
@@ -705,7 +736,7 @@ class VideoAnnotator(QMainWindow):
                     padding: 3px 8px;
                     border-radius: 4px;
                     border: 1px solid {'#666' if is_dark else '#81D4FA'};
-                    background-color: {'#333' if is_dark else '#B3E5FC'};
+                    background-color: {'#333' if is_dark else '#E1F5FE'};
                     color: {'white' if is_dark else 'black'};
                     min-width: 23px;
                     min-height: 23px;
@@ -792,6 +823,7 @@ class VideoAnnotator(QMainWindow):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.recording_filename = f"recording_{timestamp}.avi"
         self.current_frame_num = 0
+        self.sync_frame_num()
         self.live_start_time = datetime.now()
         self.recording_start_time = datetime.now()
         
@@ -986,8 +1018,8 @@ class VideoAnnotator(QMainWindow):
         except Exception as e:
             import traceback
             self.status_label.setText(self.texts["saving_video_error"].format(str(e)))
-            print(f"Error saving recording: {traceback.format_exc()}")
 
+            pass
     def list_available_cameras(self):
         cameras = []
         index = 0
@@ -1019,6 +1051,7 @@ class VideoAnnotator(QMainWindow):
             self.video_name_label.setText(self.texts["webcam"].format(self.camera_index))
             self.total_frames = 0
             self.current_frame_num = 0
+            self.sync_frame_num()
             self.paused = False
             self._play_action.setIcon(self.pause_icon)
             self._play_action.setText(self.texts["pause"])
@@ -1155,6 +1188,7 @@ class VideoAnnotator(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error loading taxons:\n{str(e)}")
 
+            pass
     def unload_model(self):
         self.model = None
         self.model_path = None
@@ -1164,7 +1198,7 @@ class VideoAnnotator(QMainWindow):
 
     def load_video(self):
         file_path, _ = QFileDialog.getOpenFileName(self, self.texts["select_video"], "", 
-                                                   "Vídeos (*.mp4 *.avi *.mov *.mkv *.m4v *.flv *.wmv);;Todos os arquivos (*)")
+                                                   self.texts.get("video_files_filter", "Videos") + " (*.mp4 *.avi *.mov *.mkv *.m4v *.flv *.wmv);;" + self.texts.get("all_files", "All Files") + " (*)")
         if file_path:
             if hasattr(self, 'dataset_mode') and self.dataset_mode:
                 if hasattr(self, 'dataset_mode') and self.dataset_mode:
@@ -1184,6 +1218,7 @@ class VideoAnnotator(QMainWindow):
 
             self.video_label.current_frame_num = 0
             self.current_frame_num = 0
+            self.sync_frame_num()
             self.start_video(file_path)
 
     def start_video(self, file_path):
@@ -1204,6 +1239,7 @@ class VideoAnnotator(QMainWindow):
             
         self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
         self.current_frame_num = 0
+        self.sync_frame_num()
         self.paused = True
         is_dark = self.palette().color(QPalette.ColorRole.Window).lightness() < 128   
         if is_dark:
@@ -1229,6 +1265,7 @@ class VideoAnnotator(QMainWindow):
         ret, frame = self.cap.read()
         if ret:
             self.current_frame_num = 1
+            self.sync_frame_num()
             self.display_frame(frame)
             self.update_time_labels()
             self.status_label.setText(self.texts["video_loaded"])
@@ -1296,10 +1333,13 @@ class VideoAnnotator(QMainWindow):
                 else:
                     self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                     self.current_frame_num = 0
+                    self.sync_frame_num()
                     self.paused = True
                     self._play_action.setIcon(self.play_icon)
                     self._play_action.setText(self.texts["play"])
                     return
+                
+            self.current_frame = frame.copy()
                 
             if self.live_mode:
                 self.current_frame_num += 1
@@ -1314,6 +1354,7 @@ class VideoAnnotator(QMainWindow):
                 current_timestamp = f"{hours:02d}:{minutes:02d}:{secs:02d}.{millis:03d}"
             else:
                 self.current_frame_num = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES))
+                self.sync_frame_num()
                 current_timestamp = self.get_video_timestamp(self.current_frame_num)
                 self.update_progress_slider()
                
@@ -1447,6 +1488,22 @@ class VideoAnnotator(QMainWindow):
                 new_w = int(w * target_h / h)
                 
             frame_resized = cv2.resize(frame_rgb, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+            # Overlay seafloor classification if available
+            if hasattr(self, 'current_seafloor_result') and self.current_seafloor_result:
+                result = self.current_seafloor_result
+                # Draw on frame before converting to RGB
+                class_name = result["class_name"]
+                confidence = result["confidence"]
+                color_hex = result["color"]
+                
+                color_rgb = tuple(int(color_hex[i:i+2], 16) for i in (1, 3, 5))
+                color_bgr = (color_rgb[2], color_rgb[1], color_rgb[0])
+                
+                label = self.texts.get("seafloor_label", "Seafloor: {class_name} ({confidence:.2f})").format(class_name=class_name, confidence=confidence)
+                cv2.rectangle(frame, (10, h-60), (350, h-20), color_bgr, -1)
+                cv2.putText(frame, label, (20, h-30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
             
             #frame display
             h, w = frame_resized.shape[:2]
@@ -1457,7 +1514,6 @@ class VideoAnnotator(QMainWindow):
             self.update_time_labels()
                 
         except Exception as e:
-            print(self.texts["debug_fatal_update_frame"].format(traceback.format_exc()))
             self.set_status_message("fatal_error")
             self.paused = True
             self.timer.stop()
@@ -1496,6 +1552,7 @@ class VideoAnnotator(QMainWindow):
         except Exception as e:
             self.set_status_message("detection_error", str(e))
 
+            pass
     def detect_objects_in_frame(self, frame):
         if self.model is None:
             self.set_status_message("no_model_loaded")
@@ -1561,10 +1618,10 @@ class VideoAnnotator(QMainWindow):
             return False
             
         except Exception as e:
-            print(self.texts["detectton_error"].format(traceback.format_exc()))
             self.set_status_message("detection_error", str(e))
             return False
     
+            pass
     def on_detection_finished(self, results, used_frame, frame_num):
         if results is None or not results.boxes:
             return
@@ -1623,6 +1680,7 @@ class VideoAnnotator(QMainWindow):
             import traceback
             traceback.print_exc()
     
+            pass
     def toggle_detection(self):
             if not self.cap or not self.cap.isOpened():
                 self.set_status_message("no_video_loaded")
@@ -1660,7 +1718,7 @@ class VideoAnnotator(QMainWindow):
                         padding: 3px 8px;
                         border-radius: 4px;
                         border: 1px solid {'#666' if is_dark else '#81D4FA'};
-                        background-color: {'#333' if is_dark else '#B3E5FC'};
+                        background-color: {'#333' if is_dark else '#E1F5FE'};
                         color: {'white' if is_dark else 'black'};
                         min-width: 23px;
                         min-height: 23px;
@@ -1676,6 +1734,10 @@ class VideoAnnotator(QMainWindow):
                 
 
     def enable_manual_annotation(self):
+        # MUTUAL EXCLUSION: Se SAM estiver ativo, desativar primeiro
+        if self.hover_segmentation_mode:
+            self.toggle_hover_segmentation()
+
         if not self.live_mode:
             self.paused = True
             is_dark = self.palette().color(QPalette.ColorRole.Window).lightness() < 128 
@@ -1726,7 +1788,7 @@ class VideoAnnotator(QMainWindow):
                     padding: 3px 8px;
                     border-radius: 4px;
                     border: 1px solid {'#666' if is_dark else '#81D4FA'};
-                    background-color: {'#333' if is_dark else '#B3E5FC'};
+                    background-color: {'#333' if is_dark else '#E1F5FE'};
                     color: {'white' if is_dark else 'black'};
                     min-width: 23px;
                     min-height: 23px;
@@ -1781,9 +1843,9 @@ class VideoAnnotator(QMainWindow):
                 self.video_label.update()
                 
         except Exception as e:
-            print(self.texts["frame_error"].format(traceback.format_exc()))
             self.set_status_message("frame_error", str(e))
 
+            pass
     def update_video_display(self):
         if not hasattr(self.video_label, '_pixmap') or self.video_label._pixmap is None:
             return
@@ -1886,6 +1948,7 @@ class VideoAnnotator(QMainWindow):
         if ret:
             # updates the number of the current frame 
             self.current_frame_num = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES))
+            self.sync_frame_num()
         
             # exhibits the frame 
             self.display_frame(frame)
@@ -1918,6 +1981,7 @@ class VideoAnnotator(QMainWindow):
         if ret:
             # updates the number of the current frame 
             self.current_frame_num = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES))
+            self.sync_frame_num()
             
             # exhibits the frame
             self.display_frame(frame)
@@ -1941,7 +2005,7 @@ class VideoAnnotator(QMainWindow):
             
         frame_pos = int((value / 100) * self.total_frames)
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_pos)
-        self.current_frame_num = frame_pos
+        self.sync_frame_num(frame_pos)
         self.update_frame()
         ret, frame = self.cap.read()
         if ret:
@@ -2088,9 +2152,11 @@ class VideoAnnotator(QMainWindow):
                         elif isinstance(names, list):
                             existing_classes = {str(name): idx for idx, name in enumerate(names)}
                 except Exception as e:
-                    print(f"Warning: Could not load existing dataset.yaml: {e}")
-            
-            # Mescla classes: mantém existentes e adiciona novas
+                    pass
+                    pass
+                except Exception as e:
+                    pass
+                    pass
             new_classes = set(ann["class"] for ann in manual_annotations)
             merged_classes = dict(existing_classes)  # Copia existentes
             
@@ -2233,6 +2299,7 @@ class VideoAnnotator(QMainWindow):
                     except:
                         pass
                 
+                        pass
                 # Acumula novas anotações
                 new_lines = set()
                 for ann in frames_dict[frame_num]:
@@ -2261,6 +2328,7 @@ class VideoAnnotator(QMainWindow):
                     except Exception as e:
                         continue
                 
+                        pass
                 # Escreve união de existentes + novas (evita duplicatas)
                 all_lines = existing_lines.union(new_lines)
                 with open(label_path, 'w') as f:
@@ -2320,7 +2388,6 @@ class VideoAnnotator(QMainWindow):
             background_indices = all_indices - annotated_indices
             
             if not background_indices:
-                print("No background images found in dataset")
                 return 0
             
             # Split background images 80/20 between train and val
@@ -2347,9 +2414,10 @@ class VideoAnnotator(QMainWindow):
                             shutil.copy2(img_path, dst)
                             background_count += 1
                         except Exception as e:
-                            print(f"Error copying {img_path}: {e}")
             
+                            pass
             # Copy background images to val folder
+                            pass
             for idx in val_bg:
                 if 0 <= idx < len(self.dataset_frames):
                     img_path = Path(self.dataset_frames[idx][0])
@@ -2367,8 +2435,9 @@ class VideoAnnotator(QMainWindow):
                             shutil.copy2(img_path, dst)
                             background_count += 1
                         except Exception as e:
-                            print(f"Error copying {img_path}: {e}")
     
+                            pass
+                            pass
     def export_yolo_annotations_dialog(self):
         output_dir = QFileDialog.getExistingDirectory(
             self, self.texts["export_yolo_dialog"])
@@ -2423,9 +2492,10 @@ class VideoAnnotator(QMainWindow):
                         elif isinstance(names, list):
                             classes = names
                 except Exception as e:
-                    print(f"Error loading yaml: {e}")
             
+                    pass
             # If no classes found, try to infer from label files
+                    pass
             if not classes and labels_dir.exists():
                 all_labels = set()
                 for split in ['train', 'val']:
@@ -2440,6 +2510,7 @@ class VideoAnnotator(QMainWindow):
                                             all_labels.add(int(parts[0]))
                             except:
                                 continue
+                                pass
                 classes = [f"class_{i}" for i in sorted(all_labels)]
             
             if not classes:
@@ -2459,6 +2530,7 @@ class VideoAnnotator(QMainWindow):
                 except:
                     frame_num = i
                 
+                    pass
                 self.dataset_frames.append((str(img_path), frame_num, i))
             
             # Load existing annotations from label files
@@ -2513,15 +2585,16 @@ class VideoAnnotator(QMainWindow):
                                 self.all_detections.append(annotation)
                     
                     except Exception as e:
-                        print(f"Error loading labels for {img_path}: {e}")
                         continue
             
+                        pass
             # Switch to dataset mode and load first frame
             self.dataset_mode = True
             if self.dataset_frames:
                 first_path = self.dataset_frames[0][0]
                 self.start_video(first_path)
                 self.current_frame_num = 0
+                self.sync_frame_num()
                 self.total_frames = len(self.dataset_frames)
                 self.paused = True
                 self.dataset_index = 0
@@ -2633,6 +2706,7 @@ class VideoAnnotator(QMainWindow):
                                                     all_labels.add(int(parts[0]))
                                     except:
                                         continue
+                                        pass
                         classes = [f"class_{i}" for i in sorted(all_labels)]
 
                     # Create or update dataset.yaml
@@ -2741,7 +2815,7 @@ class VideoAnnotator(QMainWindow):
                     
                 except Exception as e:
                     self.show_error_message("error", "config_failed", str(e))
-                    print(self.texts["debug_config_failed"].format(traceback.format_exc()))
+                    pass
                 return
             else:
                 return
@@ -2929,8 +3003,8 @@ class VideoAnnotator(QMainWindow):
             
         except Exception as e:
             self.show_error_message("error", "config_failed", str(e))
-            print(self.texts["debug_config_failed"].format(traceback.format_exc()))
 
+            pass
     def on_training_finished(self, progress):
         progress.close()
         
@@ -3136,9 +3210,9 @@ class VideoAnnotator(QMainWindow):
 
         except Exception as e:
             self.set_status_message("saving_error")
-            print(f"{self.texts['error_colon']} {traceback.format_exc()}")
             QMessageBox.critical(self, "Error", f"Export failed: {str(e)}")
 
+            pass
     def load_annotations(self, file_path):
         #validate file extension
         try:
@@ -3216,6 +3290,7 @@ class VideoAnnotator(QMainWindow):
             self.show_error_message("error", "load_annotations_error", str(e))
             self.set_status_message("load_annotations_status_error", str(e))
 
+            pass
     def save_current_frame_with_annotations(self):
         # Make sure we have something on screen
         if not hasattr(self.video_label, '_pixmap') or self.video_label._pixmap is None:
@@ -3296,7 +3371,7 @@ class VideoAnnotator(QMainWindow):
             f"D: {self.texts['detect_frame']}",
             f"T: {self.texts['toggle_detection']}",
             f"M: {self.texts['annotate_manual']}",
-            f"S: {self.texts['segment_with_sam2']}",
+            f"A: {self.texts['segment_with_sam2']}",
             f"E: {self.texts['enrich_taxonomy']}",
             f"Ctrl+O: {self.texts['load_video']}",
             f"Ctrl+M: {self.texts['load_model']}",
@@ -3329,7 +3404,7 @@ class VideoAnnotator(QMainWindow):
         if self.cap is None or self.live_mode:
             return
 
-        self.current_frame_num = frame_num
+        self.sync_frame_num(frame_num)
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
 
         self.video_label.current_frame_num = frame_num
@@ -3354,7 +3429,9 @@ class VideoAnnotator(QMainWindow):
         annotation.setdefault("video_path", self.video_path or "Live")
         annotation.setdefault("frame_number", self.current_frame_num)
         annotation.setdefault("timestamp", self.get_video_timestamp(self.current_frame_num))
-        annotation.setdefault("type", "manual")
+        # Preservar tipo existente (ex: "segmentation" do SAM)
+        if not annotation.get("type"):
+            annotation["type"] = "manual"
         annotation.setdefault("confidence", 1.0)
         
         # Avoid duplicates in all_detections
@@ -3424,6 +3501,7 @@ class VideoAnnotator(QMainWindow):
             except Exception as e:
                 raise ValueError(f"Não foi possível ler o CSV: {e}")
         
+                pass
     @staticmethod
     def parse_time_string(t: str) -> timedelta:
         try:
@@ -3513,8 +3591,8 @@ class VideoAnnotator(QMainWindow):
 
         except Exception as e:
             self.show_error_message("error", "merge_error", str(e))
-            print(self.texts["debug_merge_error"].format(traceback.format_exc()))
 
+            pass
     def open_training_wizard(self):
         wizard = TrainingWizard(self)
         if wizard.exec() != QDialog.DialogCode.Accepted:
@@ -3554,8 +3632,8 @@ class VideoAnnotator(QMainWindow):
                 shutil.copy2(src, dst)
                 self.dataset_frames.append((str(dst), frame_num, i))
             except Exception as e:
-                QMessageBox.warning(self, "Erro de Cópia", 
-                                f"Falha ao copiar:\n{src}\n→ {e}")
+                QMessageBox.warning(self, self.texts.get("copy_error", "Copy Error"), 
+                                self.texts.get("copy_failed", "Failed to copy:\n{}\n→ {}").format(src, e))
                 continue
                 
             progress.setValue(i + 1)
@@ -3567,6 +3645,7 @@ class VideoAnnotator(QMainWindow):
             first_path = self.dataset_frames[0][0]
             self.start_video(first_path)
             self.current_frame_num = 0
+            self.sync_frame_num()
             self.total_frames = len(self.dataset_frames)
             self.paused = True
             self.detections_dock.detections_list.clear()
@@ -3598,11 +3677,11 @@ class VideoAnnotator(QMainWindow):
         # Load image
         frame = cv2.imread(image_path)
         if frame is None:
-            self.status_label.setText("Error loading image: " + str(image_path))
+            self.status_label.setText(self.texts.get("error_loading_image", "Error loading image: ") + str(image_path))
             return
         
         self.current_frame = frame.copy()
-        self.current_frame_num = index
+        self.sync_frame_num(index)
         
         # Update video_label dimensions
         h, w = frame.shape[:2]
@@ -3624,164 +3703,150 @@ class VideoAnnotator(QMainWindow):
     
     def init_sam2(self):
         try:
-            self.sam2_thread = SAM2Thread("sam2.1_b.pt", self) # testing sam 3
-            self.sam2_thread.mask_finished.connect(self.on_sam2_mask_finished)
+            self.sam2_thread = SAM2Thread("sam2.1_b.pt", self)
+            self.sam2_thread.mask_preview.connect(self.on_hover_mask_preview)
             self.sam2_thread.error.connect(self.on_sam2_error)
             self.sam2_thread.start()
         except Exception as e:
             self.status_label.setText("SAM 2 initialization failed")
 
-    def on_sam2_mask_finished(self, mask_data, original_frame, frame_num):
-        try:
-            if mask_data and mask_data["segmentation"] is not None:
-                mask = mask_data["segmentation"]
-                
-                # Extract polygon contours
-                from skimage import measure
-                contours = measure.find_contours(mask, 0.5)
-                if not contours:
-                    self.status_label.setText("No valid contours found")
-                    return
-                
-                main_contour = max(contours, key=lambda c: len(c))
-                
-                # Normalize coordinates
-                h, w = mask.shape[:2]
-                normalized_coords = [(float(y)/h, float(x)/w) for x, y in main_contour]
-                
-                # Get source bbox_id if available
-                source_bbox_id = None
-                if hasattr(self, 'current_bb_for_refinement') and self.current_bb_for_refinement:
-                    source_bbox_id = self.current_bb_for_refinement.get("bbox_id")
 
-                # Create segmentation annotation
-                seg_annotation = {
-                    "type": "segmentation",
-                    "class": self.video_label.current_class,
-                    "confidence": float(mask_data["scores"][0]) if mask_data.get("scores") else 0.95,
-                    "frame_number": frame_num,
-                    "timestamp": self.get_video_timestamp(frame_num),
-                    "video_path": self.video_path or "Live",
-                    "mask": mask,  # Store binary mask
-                    "polygon": normalized_coords,
-                    "frame_source": (self.video_path, frame_num),
-                    "frame_dimensions": f"{w}x{h}",
-                    "source_bbox_id": source_bbox_id
-                }
-                
-                # Store in segmentation list
-                if not hasattr(self, 'segmentation_annotations'):
-                    self.segmentation_annotations = []
-                self.segmentation_annotations.append(seg_annotation)
-                
-                # Add to detections dock
-                self.detections_dock.add_detection(seg_annotation)
-                
-                # IMPORTANT: Redraw frame with ALL masks (preserving previous ones)
-                self.redraw_frame_with_all_masks(original_frame, frame_num)
-                
-                self.status_label.setText(f"Segmentation created: {len(normalized_coords)} points")
-                
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            self.on_sam2_error(str(e))
 
     def on_sam2_error(self, error_msg):
         self.status_label.setText(self.texts["sam2_error"].format(error_msg))
 
-    def redraw_frame_with_all_masks(self, original_frame, frame_num):
-        # Start with original frame
-        frame = original_frame.copy()
-        
-        # Get all segmentations for current frame
-        if hasattr(self, 'segmentation_annotations'):
-            for seg_ann in self.segmentation_annotations:
-                if seg_ann.get("frame_number") == frame_num:
-                    # Draw this mask on frame
-                    mask = seg_ann.get("mask")
-                    if mask is not None:
-                        self._apply_mask_to_frame(frame, mask, seg_ann)
-        
-        # Draw bbox if in refinement mode
-        if hasattr(self, 'current_bb_for_refinement') and self.current_bb_for_refinement:
-            bb = self.current_bb_for_refinement
-            cv2.rectangle(frame, (bb["x1"], bb["y1"]), (bb["x2"], bb["y2"]), 
-                        (255, 0, 0), 2)
-        
-        # Cache current annotations before display_frame clears them
-        cached_annotations = self.video_label.frame_annotations.get(frame_num, []).copy()
-        
-        # Display the frame with all masks
-        self.display_frame(frame)
 
-        # Restore annotations to video_label
-        self.video_label.active_annotations = cached_annotations
-        self.video_label.update()
 
-    def _apply_mask_to_frame(self, frame, mask, seg_ann):
-        # Get color for class
-        class_name = seg_ann.get("class", "unknown")
-        hue = hash(class_name) % 360
-        import colorsys
-        rgb = colorsys.hsv_to_rgb(hue/360, 0.8, 0.9)
-        color = (int(rgb[2]*255), int(rgb[1]*255), int(rgb[0]*255))  # BGR for OpenCV
-        
-        # Create overlay
-        overlay = frame.copy()
-        overlay[mask > 0.5] = color
-        
-        # Blend
-        alpha = 0.4
-        cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
 
-    def toggle_sam2_refinement(self):
-        if not self.sam2_refinement_mode:
-            if not self.video_label.active_annotations:
-                self.show_warning_message("warning", "sam2_draw_bbox_first")
-                return
-            
-            # Store current bbox for refinement
-            self.current_bb_for_refinement = self.video_label.active_annotations[-1]
-            
-            # Get frame for SAM 
-            sam_frame = self._get_frame_for_sam()
-            if sam_frame is None:
-                self.status_label.setText("No frame available for SAM processing")
-                return
-        
-        # Toggle state
-        self.sam2_refinement_mode = not self.sam2_refinement_mode
-        
-        if self.sam2_refinement_mode:
-            # Activate SAM 
-            self.set_status_message("sam2_refinement_on")
-            
-            # Create box for SAM - format as list of lists [[x1, y1, x2, y2]]
-            bb = self.current_bb_for_refinement
-            # SAM expects bboxes as [[x1, y1, x2, y2]] format
-            box_prompt = [[bb["x1"], bb["y1"], bb["x2"], bb["y2"]]]
-            
-            sam_frame = self._get_frame_for_sam()
-            if sam_frame is not None:
-                # Pass bboxes as the prompts argument
-                self.sam2_thread.set_frame_and_prompts(
-                    sam_frame, 
-                    self.current_frame_num, 
-                    box_prompt  # This is the 'prompts' parameter which will be used as bboxes
-                )
+    # =========================================================================
+    # HOVER-TO-SEGMENT (SAM 2)
+    # =========================================================================
+
+    def toggle_hover_segmentation(self):
+        """Ativa/desativa modo hover-to-segment via botão SAM existente."""
+        self.hover_segmentation_mode = not self.hover_segmentation_mode
+
+        if self.hover_segmentation_mode:
+            # MUTUAL EXCLUSION: Se anotação manual estiver ativa, desativar primeiro
+            if self.video_label.drawing_enabled:
+                self.enable_manual_annotation()
+
+            self.video_label.hover_segmentation_enabled = True
+
+            self.sam_button.setStyleSheet("""
+                QPushButton {
+                    padding: 3px 8px;
+                    border-radius: 4px;
+                    border: 1px solid #00c8ff;
+                    background-color: #00c8ff;
+                    color: white;
+                    min-width: 23px;
+                    min-height: 23px;
+                }
+            """)
+            self.set_status_message("hover_segmentation_on")
+
+            # Desconectar antes de conectar para evitar conexões múltiplas
+            try:
+                self.video_label.hover_point.disconnect(self.on_hover_point)
+            except (TypeError, RuntimeError):
+                pass
+            try:
+                self.video_label.hover_cleared.disconnect(self.on_hover_cleared)
+            except (TypeError, RuntimeError):
+                pass
+            try:
+                self.video_label.mask_confirmed.disconnect(self.on_mask_confirmed)
+            except (TypeError, RuntimeError):
+                pass
+
+            self.video_label.hover_point.connect(self.on_hover_point)
+            self.video_label.hover_cleared.connect(self.on_hover_cleared)
+            self.video_label.mask_confirmed.connect(self.on_mask_confirmed)
         else:
-            # Deactivate SAM
-            self.current_bb_for_refinement = None
-            self.set_status_message("sam2_refinement_off")
+            self.video_label.hover_segmentation_enabled = False
+            self.video_label._clear_preview()
 
-            sam_frame = self._get_frame_for_sam()
-            if sam_frame is not None:
-                self.redraw_frame_with_all_masks(sam_frame, self.current_frame_num)
+            # Desconectar todos os sinais individualmente
+            try:
+                self.video_label.hover_point.disconnect(self.on_hover_point)
+            except (TypeError, RuntimeError):
+                pass
+            try:
+                self.video_label.hover_cleared.disconnect(self.on_hover_cleared)
+            except (TypeError, RuntimeError):
+                pass
+            try:
+                self.video_label.mask_confirmed.disconnect(self.on_mask_confirmed)
+            except (TypeError, RuntimeError):
+                pass
+            is_dark = self.palette().color(QPalette.ColorRole.Window).lightness() < 128
+            self.sam_button.setStyleSheet(f"""
+                QPushButton {{
+                    padding: 3px 8px;
+                    border-radius: 4px;
+                    border: 1px solid {'#666' if is_dark else '#81D4FA'};
+                    background-color: {'#333' if is_dark else '#E1F5FE'};
+                    color: {'white' if is_dark else 'black'};
+                    min-width: 23px;
+                    min-height: 23px;
+                }}
+                QPushButton:hover {{
+                    background-color: {'#555' if is_dark else '#81D4FA'};
+                }}
+                QPushButton:pressed {{
+                    background-color: {'#2a82da' if is_dark else '#29B6F6'};
+                }}
+            """)
+            self.set_status_message("hover_segmentation_off")
 
+    def on_hover_point(self, x, y, frame_num):
+        # Usar sempre o frame atual do VideoAnnotator (ignorar frame_num do sinal que pode estar desatualizado)
+        actual_frame = self.current_frame_num
 
+        if not self.hover_segmentation_mode:
+            return
+
+        frame = self._get_frame_for_sam()
+        if frame is None:
+            return
+
+        h, w = frame.shape[:2]
+        # Validar e clamp coordenadas
+        x = max(0, min(int(x), w - 1))
+        y = max(0, min(int(y), h - 1))
+
+        self.sam2_thread.set_frame_and_prompts(
+            frame, actual_frame, [[float(x), float(y)]],
+            prompt_type="points", preview=True
+        )
+
+    def on_hover_cleared(self):
+        pass
+
+    def on_hover_mask_preview(self, mask_data, original_frame, frame_num):
+        if not self.hover_segmentation_mode:
+            return
+        if frame_num != self.current_frame_num:
+            return
+        self.video_label.set_preview_mask(mask_data)
+
+    def on_mask_confirmed(self, seg_annotation):
+        """Callback quando uma segmentação SAM é confirmada pelo clique.
+        
+        A segmentação já foi adicionada ao histórico via add_manual_annotation_to_history
+        em VideoLabel._confirm_preview_mask(). Este método apenas atualiza o status.
+        """
+        # Adicionar à lista de segmentações (para exportação)
+        if not hasattr(self, 'segmentation_annotations'):
+            self.segmentation_annotations = []
+        self.segmentation_annotations.append(seg_annotation)
+        
+        self.set_status_message("segmentation_confirmed", 
+                               seg_annotation.get("class", self.texts.get("unknown", "Unknown")))
+                               
     def _get_frame_for_sam(self):
-        # Priority 1: Use stored current_frame
+        # Priority 1: Use stored current_frame (cache principal — EVITA I/O)
         if hasattr(self, 'current_frame') and self.current_frame is not None:
             return self.current_frame.copy()
         
@@ -3790,13 +3855,12 @@ class VideoAnnotator(QMainWindow):
             try:
                 image_path, _, _ = self.dataset_frames[self.current_frame_num]
                 
-                #  Check if file exists
                 if not os.path.exists(image_path):
                     return None
                 
                 frame = cv2.imread(image_path)
                 if frame is not None:
-                    self.current_frame = frame  # Cache for next time
+                    self.current_frame = frame  # Cache para próximas chamadas
                     return frame
                 
             except Exception as e:
@@ -3809,11 +3873,11 @@ class VideoAnnotator(QMainWindow):
             ret, frame = self.cap.read()
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, current_pos)
             if ret:
+                self.current_frame = frame  # Cache para próximas chamadas
                 return frame
 
-
         return None
-
+    
     def export_yolo_segmentation_annotations(self, output_dir):
         # Check if we have segmentation annotations in memory
         if not hasattr(self, 'segmentation_annotations') or not self.segmentation_annotations:
@@ -3845,9 +3909,10 @@ class VideoAnnotator(QMainWindow):
                         elif isinstance(names, list):
                             existing_classes = {str(name): idx for idx, name in enumerate(names)}
                 except Exception as e:
-                    print(f"Warning: Could not load existing dataset.yaml: {e}")
             
+                    pass
             # Mescla classes: mantém existentes e adiciona novas
+                    pass
             new_classes = set(ann["class"] for ann in self.segmentation_annotations)
             merged_classes = dict(existing_classes)  # Copia existentes
             
@@ -3878,7 +3943,6 @@ class VideoAnnotator(QMainWindow):
                 random.shuffle(all_indices)
                 
                 split_idx = int(0.8 * len(all_indices))
-                print(f"Índice de corte (80%): {split_idx}")
 
                 split_idx = int(0.8 * len(all_indices))
                 train_indices = set(all_indices[:split_idx])
@@ -4034,9 +4098,10 @@ class VideoAnnotator(QMainWindow):
                                     shutil.copy2(img_path, dst)
                                     bg_count += 1
                                 except Exception as e:
-                                    print(f"Error copying background {img_path}: {e}")
                     
+                                    pass
                     # Copy background images to val folder
+                                    pass
                     for idx in val_bg:
                         if 0 <= idx < len(self.dataset_frames):
                             img_path = Path(self.dataset_frames[idx][0])
@@ -4052,10 +4117,10 @@ class VideoAnnotator(QMainWindow):
                                     shutil.copy2(img_path, dst)
                                     bg_count += 1
                                 except Exception as e:
-                                    print(f"Error copying background {img_path}: {e}")
                     
+                                    pass
+                                    pass
                     if bg_count > 0:
-                        print(f"Added {bg_count} background images to segmentation dataset")
                         self.set_status_message("background_images_added", bg_count)
             
             # Create dataset.yaml configuration file
@@ -4215,11 +4280,116 @@ class VideoAnnotator(QMainWindow):
         dialog.exec()
 
     def on_dataset_frame_changed(self, frame_num):
-        self.current_frame_num = frame_num
+        self.sync_frame_num(frame_num)
         self.video_label.current_frame_num = frame_num
         self.video_label.update_active_annotations()  # Recarrega as anotações salvas deste frame
         self.update()  # Força redesenho
 
+    def open_seafloor_dialog(self):
+        """Open seafloor classification dialog."""
+        dialog = SeafloorClassificationDialog(self, self.language)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            # Load results if needed
+            pass
+
+    def classify_current_frame(self):
+        """Classify current video frame for seafloor type."""
+        if self.cap is None or not self.cap.isOpened():
+            self.status_label.setText(self.texts.get("no_video_loaded", "No video loaded!"))
+            return
+        
+        # Capture current frame
+        current_pos = self.cap.get(cv2.CAP_PROP_POS_FRAMES)
+        ret, frame = self.cap.read()
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, current_pos)
+        
+        if not ret:
+            self.status_label.setText(self.texts.get("error_reading_frame", "Error reading frame!"))
+            return
+        
+        # Initialize classifier if needed
+        if self.seafloor_classifier is None:
+            self.status_label.setText(self.texts.get("seafloor_init", "Initializing seafloor classifier..."))
+            self.seafloor_classifier = SeafloorClassifier(
+                n_clusters=3,
+                normalize_colors=False,  # Skip normalization for single frame
+                fast_mode=True
+            )
+            # Note: For single frame, we need pre-trained model
+            # In practice, load a pre-trained model here
+        
+        try:
+            result = self.seafloor_classifier.predict_single_frame(frame)
+            
+            # Display result on frame
+            class_name = result["class_name"]
+            confidence = result["confidence"]
+            color_hex = result["color"]
+            
+            # Convert hex to BGR
+            color_rgb = tuple(int(color_hex[i:i+2], 16) for i in (1, 3, 5))
+            color_bgr = (color_rgb[2], color_rgb[1], color_rgb[0])
+            
+            # Draw label on frame
+            h, w = frame.shape[:2]
+            label = f"{class_name}: {confidence:.2f}"
+            cv2.rectangle(frame, (10, 10), (300, 50), color_bgr, -1)
+            cv2.putText(frame, label, (20, 40), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+            
+            self.display_frame(frame)
+            self.status_label.setText(self.texts.get("seafloor_label", "Seafloor: {class_name} ({confidence:.2f})").format(class_name=class_name, confidence=confidence))
+            
+            # Add to detections dock
+            detection = {
+                "x1": 10, "y1": 10, "x2": 300, "y2": 50,
+                "class": class_name,
+                "confidence": confidence,
+                "type": "seafloor",
+                "frame_number": int(current_pos),
+                "timestamp": self.get_video_timestamp(int(current_pos)),
+                "video_path": self.video_path or "Live"
+            }
+            self.detections_dock.add_detection(detection)
+            
+        except Exception as e:
+            self.status_label.setText(self.texts.get("seafloor_error", "Classification error: {}").format(str(e)))
+
+            pass
+    def toggle_seafloor_realtime(self, enabled):
+        """Toggle real-time seafloor classification."""
+        self.seafloor_enabled = enabled
+        
+        if enabled:
+            if self.seafloor_classifier is None:
+                self.seafloor_classifier = SeafloorClassifier(
+                    n_clusters=3,
+                    normalize_colors=False,
+                    fast_mode=True
+                )
+            
+            self.seafloor_thread = SeafloorClassificationThread(self.seafloor_classifier)
+            self.seafloor_thread.frame_classified.connect(self.on_seafloor_frame_classified)
+            self.seafloor_thread.start()
+            
+            self.status_label.setText(self.texts.get("seafloor_realtime_on", "Seafloor classification: ON"))
+        else:
+            if self.seafloor_thread:
+                self.seafloor_thread.stop()
+                self.seafloor_thread = None
+            self.status_label.setText(self.texts.get("seafloor_realtime_off", "Seafloor classification: OFF"))
+
+    def on_seafloor_frame_classified(self, result, frame_num):
+        """Handle real-time classification result."""
+        # Store result for display
+        self.current_seafloor_result = result
+        
+        # Update status
+        class_name = result["class_name"]
+        confidence = result["confidence"]
+        self.status_label.setText(self.texts.get("seafloor_label", "Seafloor: {} ({:.2f})").format(class_name, confidence))
+
+    
     def closeEvent(self, event):
         # Stop SAM2 thread
         if hasattr(self, 'sam2_thread') and self.sam2_thread is not None:
@@ -4236,5 +4406,9 @@ class VideoAnnotator(QMainWindow):
             if self.train_thread.isRunning():
                 self.train_thread.terminate()  # Last resort
                 self.train_thread.wait(2000)
+
+        if hasattr(self, 'seafloor_thread') and self.seafloor_thread:
+            self.seafloor_thread.stop()
+            self.seafloor_thread.wait(1000)
         
         event.accept()

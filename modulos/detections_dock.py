@@ -184,7 +184,8 @@ class DetectionsDockWidget(QDockWidget):
         if not detection.get("video_path"):
             detection["video_path"] = "Live"
         
-        if detection.get("type") == "manual":
+        # Treat manual and segmentation detections similarly
+        if detection.get("type") in ("manual", "segmentation"):
             detection.setdefault("track_id", f"manual_{len(self.all_detections)}")
             detection.setdefault("confidence", 1.0)
         
@@ -206,7 +207,7 @@ class DetectionsDockWidget(QDockWidget):
             if tid is not None:
                 if tid not in best_detections or d.get("confidence", 0) > best_detections[tid].get("confidence", 0):
                     best_detections[tid] = d
-            else:  # manual or without ID
+            else:  # manual/segmentation or without ID
                 best_detections[f"manual_{id(d)}"] = d
 
         # returns list, without [-16:]
@@ -235,7 +236,7 @@ class DetectionsDockWidget(QDockWidget):
             track_id = detection.get("track_id")
             
             if track_id is not None:
-                if detection.get("type") == "manual":
+                if detection.get("type") == "manual" or detection.get("type") == "segmentation":
                     filtered_detections.append(detection)
                 else:
                     if track_id not in best_detections or \
@@ -316,6 +317,8 @@ class DetectionsDockWidget(QDockWidget):
         text = f"{timestamp} - {class_name}" if timestamp else class_name
         if detection.get("type") == "manual":
             text += " (manual)"
+        if detection.get("type") == "segmentation":
+            text += " (segmentation)"
         else:
             text += f" ({confidence:.2f})" if confidence else ""
             if track_id is not None:

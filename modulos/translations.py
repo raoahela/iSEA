@@ -263,7 +263,25 @@ TEXTS = {
         "error_opening_video": "Erro ao abrir vídeo para extração de frames",
         "recording_saved_summary": "Salvo: {} detecções únicas, {} frames",
         "recording_saved_title": "Gravação Salva",
-        "recording_saved_message": "Vídeo: {}\nDetecções únicas: {}\nFrames salvos: {}\nAnotações: {}"
+        "recording_saved_message": "Vídeo: {}\nDetecções únicas: {}\nFrames salvos: {}\nAnotações: {}",
+        "hover_segment_sam2": "Segmentar com SAM",
+                "copy_error": "Erro de Cópia",
+        "copy_failed": "Falha ao copiar:\n{}\n→ {}",
+        "error_loading_image": "Erro ao carregar imagem: ",
+        "copy_background_error": "Erro ao copiar background {}: {}",
+"hover_segmentation_on": "Segmentação por hover ATIVADA (SAM)",
+                "segmentation_confirmed": "Segmentação: {}",
+        "sam_no_object": "SAM: Nenhum objeto detectado no ponto",
+        "seafloor_label": "Fundo: {} ({:.2f})",
+        "seafloor_realtime_on": "Classificação de fundo: ATIVADA",
+        "seafloor_realtime_off": "Classificação de fundo: DESATIVADA",
+        "seafloor_init": "Inicializando classificador de fundo...",
+        "seafloor_error": "Erro classificação: {}",
+        "seafloor_menu": "Fundo Marinho",
+        "seafloor_classify_folder": "Classificar Pasta de Imagens",
+        "seafloor_classify_frame": "Classificar Frame Atual",
+        "seafloor_realtime": "Classificação em Tempo Real",
+"hover_segmentation_off": "Segmentação por hover DESATIVADA (SAM)"
     },
     "en": {
         "about_text": (
@@ -531,6 +549,20 @@ TEXTS = {
         "error_opening_video": "Error opening video for frame extraction",
         "recording_saved_summary": "Saved: {} unique detections, {} frames",
         "recording_saved_title": "Recording Saved",
-        "recording_saved_message": "Video: {}\nUnique detections: {}\nFrames saved: {}\nAnnotations: {}"
+        "recording_saved_message": "Video: {}\nUnique detections: {}\nFrames saved: {}\nAnnotations: {}",
+        "hover_segment_sam2": "Segment with SAM",
+        "hover_segmentation_on": "Hover segmentation ACTIVATED (SAM)",
+                "segmentation_confirmed": "Segmentation: {}",
+        "sam_no_object": "SAM: No object detected at point",
+        "seafloor_label": "Seafloor: {} ({:.2f})",
+        "seafloor_realtime_on": "Seafloor classification: ON",
+        "seafloor_realtime_off": "Seafloor classification: OFF",
+        "seafloor_init": "Initializing seafloor classifier...",
+        "seafloor_error": "Classification error: {}",
+        "seafloor_menu": "Seafloor",
+        "seafloor_classify_folder": "Classify Image Folder",
+        "seafloor_classify_frame": "Classify Current Frame",
+        "seafloor_realtime": "Real-time Classification",
+"hover_segmentation_off": "Hover segmentation DEACTIVATED (SAM)"
     }
 }
