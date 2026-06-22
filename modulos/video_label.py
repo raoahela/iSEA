@@ -2,7 +2,7 @@ import cv2
 import uuid
 import numpy as np
 from PyQt6.QtCore import Qt, QPointF, QRect, QTimer, pyqtSignal
-from PyQt6.QtGui import QPainter, QPen, QColor, QImage, QPolygonF
+from PyQt6.QtGui import QPainter, QPen, QColor, QImage, QPolygonF, QCursor
 from PyQt6.QtWidgets import QLabel, QSizePolicy
 
 class VideoLabel(QLabel):
@@ -65,6 +65,15 @@ class VideoLabel(QLabel):
 
         # Máscaras confirmadas (clicadas)
         self.confirmed_masks = {}
+
+        # ===== CURSORES CONTEXTUAIS =====
+        self.cursor_default = QCursor(Qt.CursorShape.ArrowCursor)
+        self.cursor_drawing = QCursor(Qt.CursorShape.CrossCursor)
+        self.cursor_sam = QCursor(Qt.CursorShape.CrossCursor)
+        self.cursor_wait = QCursor(Qt.CursorShape.WaitCursor)
+        self.cursor_delete = QCursor(Qt.CursorShape.ForbiddenCursor)
+        # Flag para saber se SAM está processando a máscara
+        self.sam_processing = False
 
     def setPixmap(self, pixmap):
         self._pixmap = pixmap
@@ -258,36 +267,94 @@ class VideoLabel(QLabel):
         self.hover_cleared.emit()
         self.update()
 
-    def mouseMoveEvent(self, event):
-        # HOVER MODE - sempre processar primeiro quando ativo
-        if self.hover_segmentation_enabled:
-            video_rect = self.get_video_rect()
-            pos = event.position().toPoint()
+    def set_sam_processing(self, processing: bool):
+        """Chamado pelo VideoAnnotator quando SAM começa/termina de processar."""
+        self.sam_processing = processing
+        # Forçar reavaliação do cursor na posição atual do mouse
+        self._update_cursor_at_current_pos()
 
+    def _update_cursor_at_current_pos(self):
+        """Reavalia o cursor correto baseado na posição atual do mouse."""
+        from PyQt6.QtGui import QCursor as QtCursor
+        global_pos = QtCursor.pos()
+        local_pos = self.mapFromGlobal(global_pos)
+        video_rect = self.get_video_rect()
+
+        if not video_rect or not video_rect.contains(local_pos):
+            self.setCursor(self.cursor_default)
+            return
+
+        # Reaplicar a lógica do mouseMoveEvent para definir cursor correto
+        # 1. Hover sobre botão de delete
+        for ann in self.active_annotations:
+            if ann.get("delete_rect") and ann["delete_rect"].contains(local_pos):
+                self.setCursor(self.cursor_delete)
+                return
+
+        # 2. Modo Hover SAM
+        if self.hover_segmentation_enabled:
+            if self.sam_processing:
+                self.setCursor(self.cursor_wait)
+            else:
+                self.setCursor(self.cursor_sam)
+            return
+
+        # 3. Modo Anotação Manual
+        if self.drawing_enabled:
+            self.setCursor(self.cursor_drawing)
+            return
+
+        # 4. Padrão
+        self.setCursor(self.cursor_default)
+
+    def mouseMoveEvent(self, event):
+        video_rect = self.get_video_rect()
+        pos = event.position().toPoint()
+
+        # 1. PRIORIDADE: Hover sobre botão de delete de anotação
+        if video_rect and video_rect.contains(pos):
+            for ann in self.active_annotations:
+                if ann.get("delete_rect") and ann["delete_rect"].contains(pos):
+                    self.setCursor(self.cursor_delete)
+                    return
+
+        # 2. Modo Hover SAM
+        if self.hover_segmentation_enabled:
             if video_rect and video_rect.contains(pos):
+                # Cross normal durante hover, ampulheta enquanto processa
+                if self.sam_processing:
+                    self.setCursor(self.cursor_wait)
+                else:
+                    self.setCursor(self.cursor_sam)
+
                 frame_coords = self._widget_to_frame_coords(pos)
                 if frame_coords:
                     self.last_hover_pos = frame_coords
                     self.hover_debounce_timer.stop()
                     self.hover_debounce_timer.start(self.hover_delay_ms)
             else:
+                self.setCursor(self.cursor_default)
                 if self.preview_active:
                     self._clear_preview()
             return  # Importante: return aqui para não processar drawing
 
-        # MANUAL DRAWING - só processa se hover não está ativo
-        if self.drawing and self.drawing_enabled:
-            video_rect = self.get_video_rect()
-            if not video_rect:
-                return
+        # 3. Modo Anotação Manual
+        if self.drawing_enabled:
+            self.setCursor(self.cursor_drawing)
+            if self.drawing:
+                video_rect = self.get_video_rect()
+                if not video_rect:
+                    return
+                current_pos = event.position().toPoint() - video_rect.topLeft()
+                video_size = video_rect.size()
+                x = max(0, min(current_pos.x() / video_size.width(), 1.0))
+                y = max(0, min(current_pos.y() / video_size.height(), 1.0))
+                self.end_point = QPointF(x, y)
+                self.update()
+            return
 
-            current_pos = event.position().toPoint() - video_rect.topLeft()
-            video_size = video_rect.size()
-
-            x = max(0, min(current_pos.x() / video_size.width(), 1.0))
-            y = max(0, min(current_pos.y() / video_size.height(), 1.0))
-            self.end_point = QPointF(x, y)
-            self.update()
+        # 4. Padrão
+        self.setCursor(self.cursor_default)
 
     def _process_hover(self):
         if self.last_hover_pos and self.hover_segmentation_enabled:
@@ -617,60 +684,6 @@ class VideoLabel(QLabel):
                 abs(y2 - y1)
             )
             painter.drawRect(rect)
-
-        main_window = self.window()
-        if hasattr(main_window, 'current_seafloor_class') and main_window.current_seafloor_class:
-            # Banner no topo esquerdo
-            painter.setPen(Qt.PenStyle.NoPen)
-
-            # Cor baseada na classe atual
-            class_name = main_window.current_seafloor_class
-            shortcut = getattr(main_window, 'current_seafloor_shortcut', '?')
-
-            # Usar cor do classificador se disponível
-            color = QColor(0, 100, 200, 200)  # Default azul
-            if (hasattr(main_window, 'seafloor_classifier') and 
-                main_window.seafloor_classifier and
-                class_name in main_window.seafloor_classifier.class_colors):
-                hex_color = main_window.seafloor_classifier.class_colors[class_name]
-                color = QColor(hex_color)
-                color.setAlpha(200)
-
-            painter.setBrush(color)
-
-            # Banner principal
-            banner_rect = QRect(video_rect.left() + 10, video_rect.top() + 10, 320, 45)
-            painter.drawRoundedRect(banner_rect, 10, 10)
-
-            # Texto: [S] Sedimento
-            painter.setPen(QPen(Qt.GlobalColor.white, 1))
-            font = painter.font()
-            font.setPixelSize(18)
-            font.setBold(True)
-            painter.setFont(font)
-
-            text = f"[{shortcut}] {class_name}"
-            painter.drawText(banner_rect, Qt.AlignmentFlag.AlignCenter, text)
-
-            # Contador de frames coletados no segmento atual
-            if hasattr(main_window, 'seafloor_annotation_frames'):
-                count = len(main_window.seafloor_annotation_frames)
-                if count > 0:
-                    counter_rect = QRect(video_rect.left() + 10, video_rect.top() + 62, 160, 22)
-                    painter.setBrush(QColor(0, 0, 0, 160))
-                    painter.drawRoundedRect(counter_rect, 6, 6)
-                    painter.setPen(QPen(Qt.GlobalColor.white, 1))
-                    font.setPixelSize(12)
-                    font.setBold(False)
-                    painter.setFont(font)
-                    painter.drawText(counter_rect, Qt.AlignmentFlag.AlignCenter,
-                                    f"Frames: {count}")
-
-            # Indicador "gravando" piscante
-            if hasattr(main_window, 'seafloor_collecting') and main_window.seafloor_collecting:
-                dot_rect = QRect(video_rect.left() + 340, video_rect.top() + 22, 16, 16)
-                painter.setBrush(QColor(255, 0, 0, 220))
-                painter.drawEllipse(dot_rect)
 
         painter.end()
 

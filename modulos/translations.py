@@ -79,13 +79,14 @@ TEXTS = {
         "video_load_error": "Erro ao abrir o vídeo",
         "video_first_frame_error": "Erro ao ler o primeiro frame do vídeo",
         "camera_error": "Erro ao iniciar câmera: {}",
+        "camera_name": "Câmera {}",
+        "camera_open_failed": "Falha ao abrir câmera {}",
         "detection_completed": "Detecção concluída no frame {}",
         "detection_error": "Erro na detecção: {}",
         "no_video_loaded": "Nenhum vídeo carregado!",
         "no_model_loaded": "Nenhum modelo carregado!",
         "continuous_detection_on": "Detecção contínua ATIVADA",
         "continuous_detection_off": "Detecção contínua DESATIVADA",
-        "manual_annotation_off": "Anotação manual DESATIVADA",
         "fatal_error": "Erro grave - reinicie a aplicação",
         "annotations_saved": "Anotações salvas como CSV em: {}",
         "annotations_loaded": "Anotações carregadas de {}",
@@ -116,6 +117,8 @@ TEXTS = {
         "save_frame_dialog": "Salvar Frame",
         "export_yolo_dialog": "Selecionar Diretório para Exportar Anotações YOLO",
         "train_dataset_dialog": "Selecionar Diretório para Dataset de Treinamento",
+        "name_model_title": "Nome do Modelo",
+        "name_model_label": "Digite um nome para o modelo:",
         "advanced_training_settings": "Configurações Avançadas de Treinamento",
         "exporting_dataset": "Exportando Dataset YOLO",
         "training_model": "Treinamento do Modelo YOLO",
@@ -130,13 +133,23 @@ TEXTS = {
         "merge_error": "Erro ao fazer merge: {}",
         "debug_merge_error": "Erro no merge: {}",
         "success": "Sucesso",
-        "merge_completed": "Merge concluído!\nArquivo salvo em: {}",
                 
         # Textos de treinamento e exportação
         "no_annotations_to_export": "Nenhuma anotação disponível para exportar.",
         "no_manual_annotations": "Nenhuma anotação manual válida encontrada.",
         "no_manual_annotations_train": "Nenhuma anotação manual disponível para treinamento.",
         "export_completed": "Exportação Concluída",
+        "export_success": (
+            "Dataset exportado com sucesso!\n\n"
+            "Frames processados: {}/{}\n"
+            "Anotações totais: {}\n"
+            "Classes: {}\n"
+            "Imagens de fundo: {}\n"
+            "Local: {}"),
+        "export_error": ("Erro na exportação\n"
+                              "Ocorreu um erro: {}\n\n"
+                              "Detalhes técnicos:{}"
+        ),
         "training_completed": "Treinamento Concluído",
         "training_progress": "Treinando...",
         "training_success": (
@@ -178,42 +191,19 @@ TEXTS = {
         "play": "Reproduzir",
         "webcam": "Webcam (Câmera {})",
         "model_load_error": "Falha ao carregar modelo: {}",
+        "model_not_found": "Modelo não encontrado: {}",
         "video_loaded": "Vídeo carregado. Pressione Play para iniciar.",
         "recording_start_error": "Erro ao iniciar gravação",
         "error_colon": "Erro: {}",
         "error_reading_frame": "Erro ao ler o quadro do vídeo.",
-        "no_model_loaded": "Nenhum modelo carregado.",
+        "unknown": "Desconhecido",
         "no_model_loaded_error": "Erro: Nenhum modelo carregado!",
         "video_name_format": "Vídeo: {}",
-        "fatal_error": "Erro grave - reinicie a aplicação",
         "fatal_error_detail": "Ocorreu um erro grave:\n{}\n\nDetalhes no console.",
         "speed_format": "Velocidade: {}x (FPS: {:.1f})",
         "speed_detection_format": "Velocidade: {}x (Detecção a cada {} frames)",
-        "manual_annotation_off": "Anotação manual DESATIVADA",
-        "export_completed": "Exportação Concluída",
-        "background_images_added" : "Adicionadas {0} imagens de fundo ao dataset.",
-        "export_success": (
-            "Dataset exportado com sucesso!\n\n"
-            "Frames processados: {}/{}\n"
-            "Anotações totais: {}\n"
-            "Classes: {}\n"
-            "Background images: {}\n"
-            "Local: {}"),
-        "export_error": ("Erro na exportação\n"
-                              "Ocorreu um erro: {}\n\n"
-                              "Detalhes técnicos:{}"
-        ),
-        "load_annotations_error": "Falha ao carregar anotações:\n{}",
-        "annotations_loaded": " Anotações carregadas do CSV: {}",
-        "load_annotations_status_error": "Erro ao carregar anotações: {}",
-        "frame_error": "Erro ao exibir frame: {}",
-        "debug_fatal_update_frame": "Erro fatal no update_frame: {}",
-        "model_not_found": "Arquivo não encontrado: {}",
-        "camera_open_failed": "Não foi possível abrir a câmera {}",
-        "camera_name": "Câmera {}",
-        "name_model_title": "Nome do modelo",
-        "name_model_label": "Digite um nome para o modelo treinado:",
         "manual_annotation_on": "Anotação manual ativada",
+        "no_classes_loaded": "Nenhuma classe carregada. Carregue um modelo ou adicione classes manualmente.",
         "manual_annotation_off": "Anotação manual desativada",
         "add_taxon": "+ Adicionar táxon",
         "taxon_name": "Nome do táxon:",
@@ -381,13 +371,14 @@ TEXTS = {
         "video_load_error": "Error opening video",
         "video_first_frame_error": "Error reading first video frame",
         "camera_error": "Error starting camera: {}",
+        "camera_name": "Camera {}",
+        "camera_open_failed": "Failed to open camera {}",
         "detection_completed": "Detection completed on frame {}",
         "detection_error": "Detection error: {}",
         "no_video_loaded": "No video loaded!",
         "no_model_loaded": "No model loaded!",
         "continuous_detection_on": "Continuous detection ACTIVATED",
         "continuous_detection_off": "Continuous detection DEACTIVATED",
-        "manual_annotation_off": "Manual annotation DEACTIVATED",
         "fatal_error": "Fatal error - restart the application",
         "annotations_saved": "Annotations saved as CSV at: {}",
         "annotations_loaded": "Annotations loaded from {}",
@@ -418,6 +409,8 @@ TEXTS = {
         "save_frame_dialog": "Save Frame",
         "export_yolo_dialog": "Select Directory to Export YOLO Annotations",
         "train_dataset_dialog": "Select Directory for Training Dataset",
+        "name_model_title": "Model Name",
+        "name_model_label": "Enter a name for the model:",
         "advanced_training_settings": "Advanced Training Settings",
         "exporting_dataset": "Exporting YOLO Dataset",
         "training_model": "YOLO Model Training",
@@ -431,14 +424,20 @@ TEXTS = {
         "merge_completed": "Merge completed!\nFile saved at: {}",
         "merge_error": "Merge error: {}",
         "debug_merge_error": "Merge error: {}",
-        "success": "Sucesso",
-        "merge_completed": "Merge concluído!\nArquivo salvo em: {}",
+        "success": "Success",
         
         # Textos de treinamento e exportação
         "no_annotations_to_export": "No annotations available to export.",
         "no_manual_annotations": "No valid manual annotations found.",
         "no_manual_annotations_train": "No manual annotations available for training.",
         "export_completed": "Export Completed",
+        "export_success": (
+            "Dataset exported successfully!\n\n"
+            "Frames processed: {}/{}\n"
+            "Total annotations: {}\n"
+            "Classes: {}\n"
+            "Background images: {}\n"
+            "Location: {}"),
         "training_completed": "Training Completed",
         "training_progress": "Training...",
         "training_success": (
@@ -446,7 +445,7 @@ TEXTS = {
             "Model saved at:\n{}\n\n"
             "Do you want to load the new model?"
         ),
-        "training_error": "Training failed:",
+        "training_error": "Training failed: {}",
         "load_new_model_question": "Do you want to load the new model?",
         "cancel": "Cancel",
         "training_error_title": "Training Error",
@@ -466,6 +465,10 @@ TEXTS = {
         "annotation_duplicated": "Annotation duplicated",
         "annotation_too_small": "Annotation too small",
         "no_annotation_selected": "No annotation selected",
+        "copy_error": "Copy Error",
+        "copy_failed": "Failed to copy:\n{}\n→ {}",
+        "copy_background_error": "Error copying background {}: {}",
+        "error_loading_image": "Error loading image: ",
         
         # Outros
         "exporting_frames": "Exporting frames...",
@@ -480,43 +483,19 @@ TEXTS = {
         "play": "Play",
         "webcam": "Webcam (Camera {})",
         "model_load_error": "Failed to load model: {}",
+        "model_not_found": "Model not found: {}",
         "video_loaded": "Video loaded. Press Play to start.",
         "recording_start_error": "Error starting recording",
         "error_colon": "Error: {}",
         "error_reading_frame": "Error reading video frame.",
-        "no_model_loaded": "No model loaded.",
+        "unknown": "Unknown",
         "no_model_loaded_error": "Error: No model loaded!",
         "video_name_format": "Video: {}",
-        "fatal_error": "Fatal error - restart the application",
         "fatal_error_detail": "A fatal error occurred:\n{}\n\nDetails in console.",
         "speed_format": "Speed: {}x (FPS: {:.1f})",
         "speed_detection_format": "Speed: {}x (Detection every {} frames)",
-        "manual_annotation_off": "Manual annotation DEACTIVATED",
-        "export_completed" : "Export Completed",
-        "background_images_added" : "{0} background images added to the dataset.",
-        "export_success": (
-            "Dataset exported successfully!\n\n"
-            "Processed frames: {}/{}\n"
-            "Total annotations: {}\n"
-            "Classes: {}\n"
-            "Imagens de fundo: {}\n"
-            "Location: {}"
-        ),
-         "export_error": ("Export error\n"
-                              "An error occurred: {}\n\n"
-                              "Technical details:{}"
-        ),
-        "load_annotations_error": "Failed to load annotations:\n{}",
-        "annotations_loaded": "Loaded annotations from CSV: {}",
-        "load_annotations_status_error": "Error loading annotations: {}",
-        "frame_error": "Error displaying frame: {}",
-        "debug_fatal_update_frame": "Fatal error in update_frame: {}",
-        "model_not_found": "File not found: {}",
-        "camera_open_failed": "Could not open camera {}",
-        "camera_name": "Camera {}",
-        "name_model_title": "Model name",
-        "name_model_label": "Enter a name for the trained model:",
         "manual_annotation_on": "Manual annotation enabled",
+        "no_classes_loaded": "No classes loaded. Load a model or add classes manually.",
         "manual_annotation_off": "Manual annotation disabled",
         "add_taxon": "+ Add taxon",
         "taxon_name": "Name of the taxon:",
@@ -596,6 +575,5 @@ TEXTS = {
         "seafloor_max_custom": "Maximum of 10 custom categories reached!",
         "seafloor_class_fixed": "Fixed classes (S, F, R) cannot be removed!",
         "seafloor_config_saved": "Configuration saved to: {}"
-
     }
 }

@@ -36,6 +36,8 @@ from .training_wizard import TrainingWizard
 from .sam2_thread import SAM2Thread
 from .taxonomy_enrichment import TaxonomyEnrichmentDialog
 from .utils import resource_path
+from contextlib import contextmanager
+
 from .seafloor_classifier import (
     SeafloorClassifier, 
     SeafloorClassificationThread,
@@ -141,6 +143,23 @@ class VideoAnnotator(QMainWindow):
 
         self.video_name_label = QLabel(self.texts["no_loaded"])
         self.video_name_label.setStyleSheet("color: gray")
+
+        # Painel informativo acima do vídeo (seafloor, SAM, etc.)
+        self.info_panel = QLabel("")
+        self.info_panel.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.info_panel.setStyleSheet("""
+            QLabel {
+                background-color: #E3F2FD;
+                color: #1565C0;
+                border: 1px solid #90CAF9;
+                border-radius: 4px;
+                padding: 4px 12px;
+                font-size: 13px;
+                font-weight: bold;
+                min-height: 28px;
+            }
+        """)
+        self.info_panel.setVisible(False)
         
         #buttons
         self.load_button = QPushButton("")
@@ -253,6 +272,7 @@ class VideoAnnotator(QMainWindow):
         video_layout = QVBoxLayout(video_container)
         video_layout.setContentsMargins(0, 0, 0, 0)
         video_layout.addWidget(self.video_name_label)
+        video_layout.addWidget(self.info_panel)
         video_layout.addWidget(self.video_label, 1)
 
         #progress slider
@@ -892,6 +912,10 @@ class VideoAnnotator(QMainWindow):
         self.recording_start_time = datetime.now()  # Add this to track actual time
 
     def stop_recording(self):
+        # Flush seafloor annotation segment if active before stopping recording
+        if getattr(self, 'current_seafloor_class', None) and getattr(self, 'seafloor_annotation_frames', None):
+            self._save_seafloor_annotation_segment()
+
         if not self.recording:
             return
             
@@ -1541,23 +1565,7 @@ class VideoAnnotator(QMainWindow):
                 
             frame_resized = cv2.resize(frame_rgb, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
-            # Overlay seafloor classification if available
-            if hasattr(self, 'current_seafloor_result') and self.current_seafloor_result:
-                result = self.current_seafloor_result
-                # Draw on frame before converting to RGB
-                class_name = result["class_name"]
-                confidence = result["confidence"]
-                color_hex = result["color"]
-                
-                color_rgb = tuple(int(color_hex[i:i+2], 16) for i in (1, 3, 5))
-                color_bgr = (color_rgb[2], color_rgb[1], color_rgb[0])
-                
-                label = self.texts.get("seafloor_label", "Seafloor: {class_name} ({confidence:.2f})").format(class_name=class_name, confidence=confidence)
-                cv2.rectangle(frame, (10, h-60), (350, h-20), color_bgr, -1)
-                cv2.putText(frame, label, (20, h-30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-            
-            #frame display
+                        #frame display
             h, w = frame_resized.shape[:2]
             bytes_per_line = 3 * w
             q_img = QImage(frame_resized.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
@@ -1808,6 +1816,9 @@ class VideoAnnotator(QMainWindow):
         self.video_label.drawing_enabled = not self.video_label.drawing_enabled
 
         if self.video_label.drawing_enabled:   
+            # >>> CURSOR: Cross para anotação <<<
+            self.video_label.setCursor(self.video_label.cursor_drawing)
+
             # Verify class selection
             if not self.video_label.current_class:
                 first = next(iter(self.taxon_grid._buttons.keys()), None)
@@ -3080,191 +3091,173 @@ class VideoAnnotator(QMainWindow):
             ) 
 
     def save_annotations(self):
+        # Flush seafloor annotation segment if active before exporting
+        if getattr(self, 'current_seafloor_class', None) and getattr(self, 'seafloor_annotation_frames', None):
+            self._save_seafloor_annotation_segment()
+
         if not self.video_path and not self.live_mode:
             self.status_label.setText(self.texts["no_loaded"])
             return
 
-        # Determine default filename based on mode
         default_name = "annotations.csv" if self.live_mode else \
             f"{os.path.splitext(os.path.basename(self.video_path))[0]}_annotations.csv"
 
-        # 1. Show save file dialog for CSV
         output_path, _ = QFileDialog.getSaveFileName(
-            self,
-            self.texts["save_annotations"],
-            default_name,
-            "CSV Files (*.csv);;All Files (*)"
-        )
-
+            self, self.texts["save_annotations"], default_name,
+            "CSV Files (*.csv);;All Files (*)")
         if not output_path:
             return
 
-        # 2.  Ask user where to save frames
         frames_dir = QFileDialog.getExistingDirectory(
-            self,
-            "Choose folder to save frames",
-            str(Path(output_path).parent)
-        )
-
-        if not frames_dir:  # user cancelled
+            self, "Choose folder to save frames", str(Path(output_path).parent))
+        if not frames_dir:
             return
-
-        frames_dir = Path(frames_dir)  # converts to Path object 
+        frames_dir = Path(frames_dir)
 
         try:
-            # 3. Create frames directory if it doesn't exist
             frames_dir.mkdir(exist_ok=True)
-
-            # 4. Collect all detections from all sources
             all_detections = []
-            
-            # From video_label (includes manual annotations across all frames)
+
+            # 1. video_label annotations
             if hasattr(self.video_label, 'frame_annotations'):
                 for frame_num, annotations in self.video_label.frame_annotations.items():
                     for ann in annotations:
-                        # Ensure video_path field exists
-                        if "video_path" not in ann:
-                            ann["video_path"] = self.video_path if self.video_path else "Live"
+                        ann.setdefault("video_path", self.video_path or "Live")
                         all_detections.append(ann)
 
-            # From detections dock (includes automated detections)
+            # 2. detections dock
             if hasattr(self, 'detections_dock'):
-                dock_detections = self.detections_dock.filter_all()
-                for d in dock_detections:
-                    if "video_path" not in d:
-                        d["video_path"] = self.video_path if self.video_path else "Live"
+                for d in self.detections_dock.filter_all():
+                    d.setdefault("video_path", self.video_path or "Live")
                     all_detections.append(d)
 
-            # 5. Filter out training annotations (keep all other types)
-            filtered_detections = [d for d in all_detections if d.get("type") != "training"]
+            # === MAPEAMENTO FRAME -> TIPO DE FUNDO ===
+            seafloor_by_frame = {}
 
-            # 6. Remove duplicate detections based on unique identifiers
-            unique_detections = []
+            # Usar path absoluto para garantir que encontramos o arquivo
+            seafloor_csv = Path("seafloor_training_data") / "annotations.csv"
+            seafloor_csv = seafloor_csv.resolve()
+
+            if seafloor_csv.exists():
+                with open(seafloor_csv, 'r', newline='', encoding='utf-8') as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        try:
+                            s = int(row.get("start_frame", 0))
+                            e = int(row.get("end_frame", 0))
+                            cls = row.get("class", "")
+                            if cls:
+                                for fn in range(s, e + 1):
+                                    seafloor_by_frame[fn] = cls
+                        except (ValueError, TypeError):
+                            continue
+
+            # Segmento ativo (ainda em memória, ainda não salvo no CSV)
+            if self.current_seafloor_class and self.seafloor_annotation_frames:
+                for entry in self.seafloor_annotation_frames:
+                    fn = entry.get("frame_number", 0)
+                    seafloor_by_frame[fn] = self.current_seafloor_class
+            # === FIM MAPEAMENTO ===
+
+            # Filter + deduplicate
+            filtered = [d for d in all_detections if d.get("type") != "training"]
+            unique = []
             seen = set()
-            for d in filtered_detections:
-                key = (
-                    d.get("video_path"),
-                    d.get("frame_number"),
-                    d.get("timestamp"),
-                    d.get("class"),
-                    d.get("x1"), d.get("y1"), d.get("x2"), d.get("y2")
-                )
+            for d in filtered:
+                key = (d.get("video_path"), d.get("frame_number"), d.get("timestamp"),
+                       d.get("class"), d.get("x1"), d.get("y1"), d.get("x2"), d.get("y2"))
                 if key not in seen:
                     seen.add(key)
-                    unique_detections.append(d)
+                    unique.append(d)
 
-            # 7. Group by track_id, keeping highest confidence per tracked object
-            best_by_track = {}
-            for d in unique_detections:
+            best = {}
+            for d in unique:
                 tid = d.get("track_id")
                 if tid is not None:
-                    # For tracked objects, keep the highest confidence detection
-                    if tid not in best_by_track or d.get("confidence", 0) > best_by_track[tid].get("confidence", 0):
-                        best_by_track[tid] = d
+                    if tid not in best or d.get("confidence", 0) > best[tid].get("confidence", 0):
+                        best[tid] = d
                 else:
-                    # Keep all manual/untacked detections
-                    key = f"manual_{d.get('frame_number', 0)}_{id(d)}"
-                    best_by_track[key] = d
+                    k = f"{d.get('type', 'unknown')}_{d.get('frame_number', 0)}_{id(d)}"
+                    best[k] = d
 
-            # 8. Extract and save frames 
-            saved_frames = {}  # Cache: (video_path, frame_num) -> relative_path
-            progress = QProgressDialog(self.texts["exporting_frames"], self.texts["cancel"], 0, len(best_by_track), self)
+            # Save frames
+            saved = {}
+            progress = QProgressDialog(self.texts["exporting_frames"], self.texts["cancel"], 0, len(best), self)
             progress.setWindowModality(Qt.WindowModality.WindowModal)
             progress.show()
 
-            for i, ann in enumerate(best_by_track.values()):
+            for i, ann in enumerate(best.values()):
                 if progress.wasCanceled():
                     break
-                    
-                frame_num = ann.get("frame_number")
-                video_path = ann.get("video_path", "Live")
-                
-                # Check if frame was already saved to avoid duplication
-                frame_key = (video_path, frame_num)
-                if frame_key in saved_frames:
-                    ann["frame_path"] = saved_frames[frame_key]
+                fn = ann.get("frame_number")
+                vp = ann.get("video_path", "Live")
+                fk = (vp, fn)
+                if fk in saved:
+                    ann["frame_path"] = saved[fk]
                     continue
 
-                # Determine frame save path
-                if video_path == "Live":
-                    # For Live mode: save current frame from memory
+                if vp == "Live":
                     if hasattr(self, 'current_frame') and self.current_frame is not None:
-                        frame_name = f"live_frame_{frame_num or 0}.jpg"
-                        frame_path = frames_dir / frame_name
-                        cv2.imwrite(str(frame_path), self.current_frame)
-                        saved_frames[frame_key] = str(frame_path)  
+                        fp = frames_dir / f"live_frame_{fn or 0}.jpg"
+                        cv2.imwrite(str(fp), self.current_frame)
+                        saved[fk] = str(fp)
                     else:
-                        saved_frames[frame_key] = "N/A"
+                        saved[fk] = "N/A"
                 else:
-                    # For video files: extract specific frame
-                    video_name = Path(video_path).stem
-                    frame_name = f"{video_name}_frame_{frame_num:06d}.jpg"
-                    frame_path = frames_dir / frame_name
-                    
-                    # Avoid re-extracting if frame already exists
-                    if not frame_path.exists():
-                        cap = cv2.VideoCapture(str(video_path))
-                        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
-                        ret, frame = cap.read()
-                        if ret:
-                            cv2.imwrite(str(frame_path), frame)
-                        cap.release()
-                    
-                    saved_frames[frame_key] = str(frame_path)  
-
-                ann["frame_path"] = saved_frames[frame_key]
+                    vn = Path(vp).stem
+                    fp = frames_dir / f"{vn}_frame_{fn:06d}.jpg"
+                    if not fp.exists():
+                        c = cv2.VideoCapture(str(vp))
+                        c.set(cv2.CAP_PROP_POS_FRAMES, fn)
+                        r, fr = c.read()
+                        if r:
+                            cv2.imwrite(str(fp), fr)
+                        c.release()
+                    saved[fk] = str(fp)
+                ann["frame_path"] = saved[fk]
                 progress.setValue(i)
-
             progress.close()
 
-            # 9. Prepare CSV data with frame paths
+            # Export CSV com coluna Seafloor
             export_data = []
-            for ann in best_by_track.values():
-                video_path = ann.get("video_path", "")
-                video_name = "Live" if video_path == "Live" else os.path.basename(str(video_path)) if video_path else "Unknown"
-                
-                confidence = ann.get('confidence', 0)
-                confidence_str = f"{confidence:.2f}" if isinstance(confidence, (int, float)) else str(confidence)
-                
+            for ann in best.values():
+                vp = ann.get("video_path", "")
+                vn = "Live" if vp == "Live" else os.path.basename(str(vp)) if vp else "Unknown"
+                conf = ann.get('confidence', 0)
+                conf_str = f"{conf:.2f}" if isinstance(conf, (int, float)) else str(conf)
+                fn = ann.get("frame_number", 0)
+                seafloor = seafloor_by_frame.get(fn, "")
                 export_data.append({
-                    "Video": video_name, 
-                    "Timestamp": ann.get("timestamp", ""),
+                    "Video": vn, "Timestamp": ann.get("timestamp", ""),
                     "System_Date": ann.get("system_date", ""),
                     "System_Time": ann.get("system_time", ""),
                     "Taxon": ann.get("class", "Unknown"),
-                    "Confidence": confidence_str,
-                    "Type": ann.get("type", "unknown"),
+                    "Confidence": conf_str, "Type": ann.get("type", "unknown"),
                     "Track_ID": ann.get("track_id", ""),
-                    "x1": ann.get("x1", ""),
-                    "y1": ann.get("y1", ""),
-                    "x2": ann.get("x2", ""),
-                    "y2": ann.get("y2", ""),
-                    "Frame_Number": ann.get("frame_number", ""),
+                    "x1": ann.get("x1", ""), "y1": ann.get("y1", ""),
+                    "x2": ann.get("x2", ""), "y2": ann.get("y2", ""),
+                    "Frame_Number": fn,
+                    "Seafloor": seafloor,
                     "Photo": ann.get("frame_path", "")
                 })
 
-            # 10. Save CSV file
-            with open(output_path, 'w', newline='', encoding='utf-8') as csvfile:
-                fieldnames = ["Video", "Timestamp", "System_Date", "System_Time", 
-                             "Taxon", "Confidence", "Type", "Track_ID",
-                                "x1", "y1", "x2", "y2", "Frame_Number", "Photo"]
-                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-                writer.writeheader()
-                writer.writerows(export_data)
+            with open(output_path, 'w', newline='', encoding='utf-8') as f:
+                w = csv.DictWriter(f, fieldnames=[
+                    "Video", "Timestamp", "System_Date", "System_Time",
+                    "Taxon", "Confidence", "Type", "Track_ID",
+                    "x1", "y1", "x2", "y2", "Frame_Number", "Seafloor", "Photo"])
+                w.writeheader()
+                w.writerows(export_data)
 
             self.status_label.setText(self.texts["annotations_saved"].format(output_path))
-            QMessageBox.information(
-                self, 
-                self.texts['export_completed'], 
+            QMessageBox.information(self, self.texts['export_completed'],
                 f"{self.texts['annotations_saved'].format(output_path)}\n"
-                f"{self.texts['frames_saved'].format(frames_dir)}\n"
-            )
+                f"{self.texts['frames_saved'].format(frames_dir)}\n")
 
         except Exception as e:
             self.set_status_message("saving_error")
             QMessageBox.critical(self, "Error", f"Export failed: {str(e)}")
-
-            pass
+            
     def load_annotations(self, file_path):
         #validate file extension
         try:
@@ -3785,6 +3778,9 @@ class VideoAnnotator(QMainWindow):
 
             self.video_label.hover_segmentation_enabled = True
 
+            # >>> CURSOR: Cross para SAM <<<
+            self.video_label.setCursor(self.video_label.cursor_sam)
+
             self.sam_button.setStyleSheet("""
                 QPushButton {
                     padding: 3px 8px;
@@ -3818,6 +3814,9 @@ class VideoAnnotator(QMainWindow):
         else:
             self.video_label.hover_segmentation_enabled = False
             self.video_label._clear_preview()
+
+            # >>> CURSOR: Voltar ao padrão <<<
+            self.video_label.unsetCursor()
 
             # Desconectar todos os sinais individualmente
             try:
@@ -3868,6 +3867,9 @@ class VideoAnnotator(QMainWindow):
         x = max(0, min(int(x), w - 1))
         y = max(0, min(int(y), h - 1))
 
+        # >>> CURSOR: Ampulheta enquanto processa <<<
+        self.video_label.set_sam_processing(True)
+
         self.sam2_thread.set_frame_and_prompts(
             frame, actual_frame, [[float(x), float(y)]],
             prompt_type="points", preview=True
@@ -3877,6 +3879,9 @@ class VideoAnnotator(QMainWindow):
         pass
 
     def on_hover_mask_preview(self, mask_data, original_frame, frame_num):
+        # >>> CURSOR: Voltar ao cross (processamento terminou) <<<
+        self.video_label.set_sam_processing(False)
+
         if not self.hover_segmentation_mode:
             return
         if frame_num != self.current_frame_num:
@@ -4344,6 +4349,45 @@ class VideoAnnotator(QMainWindow):
             # Load results if needed
             pass
 
+    def _update_info_panel(self, message, color_hex=None):
+        """Atualiza o painel informativo acima do vídeo."""
+        if not message:
+            self.info_panel.setVisible(False)
+            return
+
+        self.info_panel.setText(message)
+
+        # Aplicar cor customizada se fornecida
+        if color_hex:
+            self.info_panel.setStyleSheet(f"""
+                QLabel {{
+                    background-color: {color_hex}33;
+                    color: {color_hex};
+                    border: 1px solid {color_hex}66;
+                    border-radius: 4px;
+                    padding: 4px 12px;
+                    font-size: 13px;
+                    font-weight: bold;
+                    min-height: 28px;
+                }}
+            """)
+        else:
+            # Cor padrão azul
+            self.info_panel.setStyleSheet("""
+                QLabel {
+                    background-color: #E3F2FD;
+                    color: #1565C0;
+                    border: 1px solid #90CAF9;
+                    border-radius: 4px;
+                    padding: 4px 12px;
+                    font-size: 13px;
+                    font-weight: bold;
+                    min-height: 28px;
+                }
+            """)
+
+        self.info_panel.setVisible(True)
+
     def classify_current_frame(self):
         """Classify current video frame for seafloor type."""
         if self.cap is None or not self.cap.isOpened():
@@ -4390,7 +4434,10 @@ class VideoAnnotator(QMainWindow):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
             
             self.display_frame(frame)
-            self.status_label.setText(self.texts.get("seafloor_label", "Seafloor: {class_name} ({confidence:.2f})").format(class_name=class_name, confidence=confidence))
+            self._update_info_panel(
+                f"🌊 {class_name}: {confidence:.2f}",
+                color_hex=color_hex
+            )
             
             # Add to detections dock
             detection = {
@@ -4493,14 +4540,19 @@ class VideoAnnotator(QMainWindow):
         self.seafloor_annotation_start_frame = self.current_frame_num
         self.seafloor_frame_counter = 0
 
-        self.status_label.setText(f"Fundo [{shortcut}]: {class_name} (coletando...)")
+        # Mostrar no painel informativo acima do vídeo
+        color_hex = None
+        if (self.seafloor_classifier and 
+            class_name in self.seafloor_classifier.class_colors):
+            color_hex = self.seafloor_classifier.class_colors[class_name]
+
+        self._update_info_panel(
+            f"🌊 [{shortcut}] {class_name} — COLETANDO | Shift+S para parar",
+            color_hex=color_hex
+        )
 
         # Ativar flag para coleta automática de frames durante playback
         self.seafloor_collecting = True
-
-        # Forçar repaint do video_label para mostrar indicador
-        if hasattr(self, 'video_label'):
-            self.video_label.update()
 
     def stop_seafloor_annotation(self):
         """Para a coleta de frames e salva o último segmento."""
@@ -4509,11 +4561,10 @@ class VideoAnnotator(QMainWindow):
             self.current_seafloor_class = None
             self.current_seafloor_shortcut = None
             self.seafloor_collecting = False
-            self.status_label.setText("Anotação de fundo finalizada")
-
-            # Forçar repaint para remover indicador
-            if hasattr(self, 'video_label'):
-                self.video_label.update()
+            self._update_info_panel("✓ Anotação de fundo finalizada")
+            # Esconde o painel após 3 segundos
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(3000, lambda: self._update_info_panel(""))
 
     def _save_seafloor_annotation_segment(self):
         """Finaliza anotação do trecho anterior e salva metadados."""
@@ -4587,12 +4638,17 @@ class VideoAnnotator(QMainWindow):
             "timestamp": self.get_video_timestamp(self.current_frame_num)
         })
 
-        # Atualizar status a cada 5 frames salvos (evitar spam)
+        # Atualizar painel informativo a cada 5 frames salvos
         total_saved = len(self.seafloor_annotation_frames)
         if total_saved % 5 == 0:
-            self.status_label.setText(
-                f"Fundo [{self.current_seafloor_shortcut}]: {self.current_seafloor_class} | "
-                f"{total_saved} frames coletados"
+            color_hex = None
+            if (self.seafloor_classifier and 
+                self.current_seafloor_class in self.seafloor_classifier.class_colors):
+                color_hex = self.seafloor_classifier.class_colors[self.current_seafloor_class]
+            self._update_info_panel(
+                f"🌊 [{self.current_seafloor_shortcut}] {self.current_seafloor_class} | "
+                f"{total_saved} frames coletados | Shift+S para parar",
+                color_hex=color_hex
             )
 
     def open_seafloor_class_manager(self):
@@ -4664,6 +4720,22 @@ class VideoAnnotator(QMainWindow):
             import traceback
             traceback.print_exc()
  
+
+    # =========================================================================
+    # CURSORES E OPERAÇÕES LONGAS
+    # =========================================================================
+
+    @contextmanager
+    def wait_cursor(self, widget=None):
+        """Context manager para mostrar cursor de espera durante operações longas."""
+        target = widget or self.video_label
+        from PyQt6.QtGui import QCursor
+        target.setOverrideCursor(QCursor(Qt.CursorShape.WaitCursor))
+        try:
+            yield
+        finally:
+            target.restoreOverrideCursor()
+
     def closeEvent(self, event):
         # Stop SAM2 thread
         if hasattr(self, 'sam2_thread') and self.sam2_thread is not None:
