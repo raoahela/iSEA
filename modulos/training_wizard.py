@@ -84,7 +84,7 @@ class TrainingWizard(QDialog):
                 break
             if frame_counter % step == 0:
                 # Temporary frame: [video_name]_frame_000000.jpg
-                temp_name = f"{safe_video_name}_frame_{saved_counter:06d}.jpg"
+                temp_name = f"frame_{saved_counter:06d}.jpg"
                 fname = out_dir / temp_name
                 cv2.imwrite(str(fname), frame)
                 

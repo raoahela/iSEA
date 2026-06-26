@@ -1,6 +1,7 @@
 import cv2
 import uuid
 import numpy as np
+from pathlib import Path
 from PyQt6.QtCore import Qt, QPointF, QRect, QTimer, pyqtSignal
 from PyQt6.QtGui import QPainter, QPen, QColor, QImage, QPolygonF, QCursor
 from PyQt6.QtWidgets import QLabel, QSizePolicy
@@ -71,9 +72,11 @@ class VideoLabel(QLabel):
         self.cursor_drawing = QCursor(Qt.CursorShape.CrossCursor)
         self.cursor_sam = QCursor(Qt.CursorShape.CrossCursor)
         self.cursor_wait = QCursor(Qt.CursorShape.WaitCursor)
-        self.cursor_delete = QCursor(Qt.CursorShape.ForbiddenCursor)
         # Flag para saber se SAM está processando a máscara
         self.sam_processing = False
+
+        # Posição atual do mouse para auto-hide de labels
+        self.mouse_pos = None
 
     def setPixmap(self, pixmap):
         self._pixmap = pixmap
@@ -221,11 +224,17 @@ class VideoLabel(QLabel):
         x2_px = int(np.max(xs))
         y2_px = int(np.max(ys))
 
+        # CORREÇÃO: No modo dataset, usar dataset_index como frame_number para consistência
+        if getattr(main_window, 'dataset_mode', False):
+            frame_num = getattr(main_window, 'dataset_index', main_window.current_frame_num)
+        else:
+            frame_num = main_window.current_frame_num
+
         seg_annotation = {
             "type": "segmentation",
             "class": self.current_class or "unknown",
             "confidence": 1.0,
-            "frame_number": main_window.current_frame_num,
+            "frame_number": frame_num,
             "timestamp": main_window.get_video_timestamp(main_window.current_frame_num),
             "video_path": main_window.video_path or "Live",
             "mask": self.preview_mask.copy(),
@@ -242,7 +251,7 @@ class VideoLabel(QLabel):
             "label": self.current_class or "unknown",
         }
 
-        frame = main_window.current_frame_num
+        frame = frame_num
         if frame not in self.confirmed_masks:
             self.confirmed_masks[frame] = []
         self.confirmed_masks[frame].append(seg_annotation)
@@ -285,11 +294,6 @@ class VideoLabel(QLabel):
             return
 
         # Reaplicar a lógica do mouseMoveEvent para definir cursor correto
-        # 1. Hover sobre botão de delete
-        for ann in self.active_annotations:
-            if ann.get("delete_rect") and ann["delete_rect"].contains(local_pos):
-                self.setCursor(self.cursor_delete)
-                return
 
         # 2. Modo Hover SAM
         if self.hover_segmentation_enabled:
@@ -311,12 +315,8 @@ class VideoLabel(QLabel):
         video_rect = self.get_video_rect()
         pos = event.position().toPoint()
 
-        # 1. PRIORIDADE: Hover sobre botão de delete de anotação
-        if video_rect and video_rect.contains(pos):
-            for ann in self.active_annotations:
-                if ann.get("delete_rect") and ann["delete_rect"].contains(pos):
-                    self.setCursor(self.cursor_delete)
-                    return
+        # SEMPRE rastrear posição do mouse para auto-hide de labels
+        self.mouse_pos = pos
 
         # 2. Modo Hover SAM
         if self.hover_segmentation_enabled:
@@ -355,6 +355,8 @@ class VideoLabel(QLabel):
 
         # 4. Padrão
         self.setCursor(self.cursor_default)
+        # Forçar redesenho para atualizar auto-hide de labels no hover
+        self.update()
 
     def _process_hover(self):
         if self.last_hover_pos and self.hover_segmentation_enabled:
@@ -449,7 +451,6 @@ class VideoLabel(QLabel):
             self.update()
 
     def update_active_annotations(self):
-        # Carregar apenas anotações NÃO-segmentação do frame atual
         all_frame_anns = self.frame_annotations.get(self.current_frame_num, [])
         self.active_annotations = [
             ann for ann in all_frame_anns 
@@ -530,6 +531,9 @@ class VideoLabel(QLabel):
             main_window.remove_annotation_from_history(ann)
         elif hasattr(main_window.detections_dock, 'remove_detection'):
             main_window.detections_dock.remove_detection(ann)
+
+        # NOVO: salvar labels no disco imediatamente (bbox + seg)
+        self._save_frame_labels_to_disk(ann.get("frame_number", self.current_frame_num))
 
         self.update()
 
@@ -647,10 +651,24 @@ class VideoLabel(QLabel):
             text_height = painter.fontMetrics().height()
             text_rect = QRect(text_x - 5, max(0, text_y - 20),
                             text_width, text_height)
-            painter.fillRect(text_rect, color)
 
-            painter.setPen(QPen(Qt.GlobalColor.white, 1))
-            painter.drawText(text_x, text_y, ann["class"])
+            # === AUTO-HIDE: Verificar se mouse está sobre a label ===
+            hide_label = False
+            if self.mouse_pos is not None and text_rect.contains(self.mouse_pos):
+                hide_label = True
+
+            if not hide_label:
+                # === LABEL SEMI-TRANSPARENTE (fundo + texto + contorno) ===
+                # Fundo com alpha reduzido
+                label_bg = QColor(color)
+                label_bg.setAlpha(60)
+                painter.fillRect(text_rect, label_bg)
+
+                # Texto branco semi-transparente
+                text_color = QColor(Qt.GlobalColor.white)
+                text_color.setAlpha(100)
+                painter.setPen(QPen(text_color, 1))
+                painter.drawText(text_x, text_y, ann["class"])
 
             delete_rect = QRect(
                 rect.right() - self.delete_box_size - self.delete_box_offset,
@@ -816,6 +834,151 @@ class VideoLabel(QLabel):
         frame_x = int(rel_pos.x() * (original_width / video_rect.width()))
         frame_y = int(rel_pos.y() * (original_height / video_rect.height()))
         return frame_x, frame_y
+    
+    def _save_frame_labels_to_disk(self, frame_num):
+        """Regrava o arquivo .txt do frame no disco após delete.
+        Suporta tanto bbox (detection) quanto segmentação (polygon)."""
+        main_window = self.window()
+        
+        if not getattr(main_window, 'dataset_mode', False):
+            return
+        if not hasattr(main_window, 'dataset_frames') or not main_window.dataset_frames:
+            return
+        
+        # Encontrar o arquivo de imagem correspondente a este frame_num
+        img_path = None
+        for path, orig_num, d_idx in main_window.dataset_frames:
+            if d_idx == frame_num:
+                img_path = Path(path)
+                break
+        
+        if img_path is None:
+            return
+        
+        split = img_path.parent.name if img_path.parent.name in ('train', 'val') else 'train'
+        dataset_root = img_path.parent.parent.parent
+        
+        # Carregar class_id mapping do dataset.yaml
+        yaml_path = dataset_root / "dataset.yaml"
+        class_to_id = {}
+        if yaml_path.exists():
+            try:
+                import yaml
+                with open(yaml_path, 'r') as f:
+                    data = yaml.safe_load(f)
+                if data and 'names' in data:
+                    names = data['names']
+                    if isinstance(names, dict):
+                        for k, v in names.items():
+                            class_to_id[str(v)] = int(k)
+                    elif isinstance(names, list):
+                        for idx, name in enumerate(names):
+                            class_to_id[str(name)] = idx
+            except:
+                pass
+        
+        # Fallback: construir do model + custom_classes
+        if not class_to_id and main_window.model:
+            for idx, name in main_window.model.names.items():
+                class_to_id[str(name)] = int(idx)
+        for cls in getattr(main_window, 'custom_classes', []):
+            if cls not in class_to_id:
+                class_to_id[cls] = len(class_to_id)
+        
+        ow = self.original_width or 640
+        oh = self.original_height or 480
+        
+        # Separar anotações por tipo
+        frame_anns = self.frame_annotations.get(frame_num, [])
+        bbox_anns = [a for a in frame_anns if a.get("type") != "segmentation"]
+        seg_anns = [a for a in frame_anns if a.get("type") == "segmentation"]
+        
+        # Também verificar confirmed_masks
+        mask_anns = self.confirmed_masks.get(frame_num, [])
+        
+        # === SALVAR BBOX (detection) ===
+        labels_dir = dataset_root / "labels" / split
+        label_path = labels_dir / f"{img_path.stem}.txt"
+        
+        lines_bbox = []
+        for ann in bbox_anns:
+            cls_name = ann.get("class", "unknown")
+            class_id = class_to_id.get(cls_name, hash(cls_name) % 1000)
+            
+            x1, y1, x2, y2 = ann["x1"], ann["y1"], ann["x2"], ann["y2"]
+            x_center = ((x1 + x2) / 2) / ow
+            y_center = ((y1 + y2) / 2) / oh
+            bw = (x2 - x1) / ow
+            bh = (y2 - y1) / oh
+            
+            x_center = max(0.0, min(1.0, x_center))
+            y_center = max(0.0, min(1.0, y_center))
+            bw = max(0.0, min(1.0, bw))
+            bh = max(0.0, min(1.0, bh))
+            
+            lines_bbox.append(f"{class_id} {x_center:.6f} {y_center:.6f} {bw:.6f} {bh:.6f}")
+        
+        # === SALVAR SEGMENTAÇÃO (polygon) ===
+        # Segmentações podem estar em frame_annotations (type=segmentation) ou confirmed_masks
+        lines_seg = []
+        all_seg = seg_anns + mask_anns
+        
+        for ann in all_seg:
+            cls_name = ann.get("class", "unknown")
+            class_id = class_to_id.get(cls_name, hash(cls_name) % 1000)
+            
+            # Tentar usar polygon normalizado se existir
+            if "polygon" in ann and ann["polygon"]:
+                poly = ann["polygon"]
+                # polygon é lista de (y, x) normalizado 0-1 do skimage
+                coords = " ".join([f"{float(y):.6f} {float(x):.6f}" for y, x in poly])
+                lines_seg.append(f"{class_id} {coords}")
+            elif "mask" in ann and ann["mask"] is not None:
+                # Extrair contorno da máscara binária
+                try:
+                    mask = ann["mask"]
+                    if mask.dtype != np.uint8:
+                        mask = (mask > 0.5).astype(np.uint8)
+                    
+                    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    if contours:
+                        # Pegar maior contorno
+                        largest = max(contours, key=cv2.contourArea)
+                        # Simplificar com approxPolyDP para reduzir pontos
+                        epsilon = 0.005 * cv2.arcLength(largest, True)
+                        approx = cv2.approxPolyDP(largest, epsilon, True)
+                        
+                        # Normalizar e formatar
+                        coords = []
+                        for pt in approx:
+                            nx = pt[0][0] / ow
+                            ny = pt[0][1] / oh
+                            coords.append(f"{ny:.6f}")
+                            coords.append(f"{nx:.6f}")
+                        
+                        lines_seg.append(f"{class_id} " + " ".join(coords))
+                except:
+                    pass
+        
+        # === ESCREVER ARQUIVOS ===
+        # Detection label (sempre em labels/train ou labels/val)
+        if lines_bbox:
+            with open(label_path, 'w') as f:
+                for line in sorted(lines_bbox):
+                    f.write(line + "\n")
+        elif label_path.exists():
+            label_path.unlink()
+        
+        # Segmentation label (em labels-seg/train ou labels-seg/val, ou mesmo arquivo com formato diferente)
+        # YOLO segmentation usa o MESMO arquivo .txt mas com formato de polígono
+        # Então acumulamos tudo no mesmo arquivo!
+        all_lines = lines_bbox + lines_seg
+        if all_lines:
+            with open(label_path, 'w') as f:
+                for line in sorted(all_lines):
+                    f.write(line + "\n")
+        elif label_path.exists():
+            label_path.unlink()
 
     def remove_annotation_from_display(self, bbox_id: str):
         self.active_annotations = [
