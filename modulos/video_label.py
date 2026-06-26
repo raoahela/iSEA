@@ -351,6 +351,10 @@ class VideoLabel(QLabel):
                 y = max(0, min(current_pos.y() / video_size.height(), 1.0))
                 self.end_point = QPointF(x, y)
                 self.update()
+            else:
+                # Não está desenhando, mas está em modo anotação
+                # Forçar update para auto-hide de labels no hover
+                self.update()
             return
 
         # 4. Padrão
@@ -666,7 +670,7 @@ class VideoLabel(QLabel):
 
                 # Texto branco semi-transparente
                 text_color = QColor(Qt.GlobalColor.white)
-                text_color.setAlpha(100)
+                text_color.setAlpha(80)
                 painter.setPen(QPen(text_color, 1))
                 painter.drawText(text_x, text_y, ann["class"])
 
