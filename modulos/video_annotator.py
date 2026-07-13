@@ -792,6 +792,10 @@ class VideoAnnotator(QMainWindow):
         self.detections_dock.show()
     
     def toggle_live_mode(self):
+        # Stop seafloor realtime when toggling live mode
+        if getattr(self, 'seafloor_enabled', False):
+            self.toggle_seafloor_realtime(False)
+
         if self.live_mode:
             self.stop_recording()
             self.live_mode = False
@@ -1286,6 +1290,10 @@ class VideoAnnotator(QMainWindow):
             self.start_video(file_path)
 
     def start_video(self, file_path):
+        # Stop seafloor realtime when loading a new video
+        if getattr(self, 'seafloor_enabled', False):
+            self.toggle_seafloor_realtime(False)
+
         self.video_path = file_path
         self.video_name_label.setText(self.texts["video_name_format"].format(os.path.basename(file_path)))
         
@@ -1397,6 +1405,9 @@ class VideoAnnotator(QMainWindow):
                     # Salvar frame atual para treinamento
                     self._save_seafloor_training_frame()
             if not ret:
+                # Pause seafloor realtime classification when video ends
+                if getattr(self, 'seafloor_enabled', False):
+                    self.toggle_seafloor_realtime(False)
                 if self.live_mode:
                     self.start_camera()
                     return
@@ -1410,6 +1421,18 @@ class VideoAnnotator(QMainWindow):
                     return
                 
             self.current_frame = frame.copy()
+
+            # === SEAFLOOR REALTIME CLASSIFICATION ===
+            # Feed frame to seafloor classification thread (with frame skip)
+            if getattr(self, 'seafloor_enabled', False) and hasattr(self, 'seafloor_thread') and self.seafloor_thread:
+                if not hasattr(self, 'seafloor_realtime_counter'):
+                    self.seafloor_realtime_counter = 0
+                if not hasattr(self, 'seafloor_realtime_skip'):
+                    self.seafloor_realtime_skip = 5
+                self.seafloor_realtime_counter += 1
+                if self.seafloor_realtime_counter % self.seafloor_realtime_skip == 0:
+                    if hasattr(self.seafloor_thread, 'add_frame'):
+                        self.seafloor_thread.add_frame(frame.copy(), self.current_frame_num)
                 
             if self.live_mode:
                 self.current_frame_num += 1
@@ -1944,6 +1967,14 @@ class VideoAnnotator(QMainWindow):
         
         is_dark = self.palette().color(QPalette.ColorRole.Window).lightness() < 128   
         self.paused = not self.paused
+
+        # Pause seafloor realtime classification when video is paused
+        if self.paused and getattr(self, 'seafloor_enabled', False):
+            if hasattr(self, 'seafloor_thread') and self.seafloor_thread:
+                self.seafloor_thread._paused = True
+        elif not self.paused and getattr(self, 'seafloor_enabled', False):
+            if hasattr(self, 'seafloor_thread') and self.seafloor_thread:
+                self.seafloor_thread._paused = False
         if self.paused:
             if is_dark:
                 self._play_action.setIcon(self.recolor_icon(QStyle.StandardPixmap.SP_MediaPlay))
@@ -2368,7 +2399,7 @@ class VideoAnnotator(QMainWindow):
                 f"Dataset exportado com sucesso!\n\n"
                 f"Train: {train_imgs} images, {train_labels} labels\n"
                 f"Val: {val_imgs} images, {val_labels} labels\n"
-                f"Anoções exportadas: {len(manual_annotations)}\n"
+                f"Anotações exportadas: {len(manual_annotations)}\n"
                 f"Frames processados: {processed}\n"
                 f"Classes: {classes}\n\n"
                 f"Salvo em: {output_dir}"
@@ -4386,7 +4417,7 @@ class VideoAnnotator(QMainWindow):
         self.info_panel.setVisible(True)
 
     def classify_current_frame(self):
-        """Classify current video frame for seafloor type."""
+        """Classifica frame atual usando modelo treinado (Ctrl+F)."""
         if self.cap is None or not self.cap.isOpened():
             self.status_label.setText(self.texts.get("no_video_loaded", "No video loaded!"))
             return
@@ -4402,14 +4433,31 @@ class VideoAnnotator(QMainWindow):
         
         # Initialize classifier if needed
         if self.seafloor_classifier is None:
-            self.status_label.setText(self.texts.get("seafloor_init", "Initializing seafloor classifier..."))
             self.seafloor_classifier = SeafloorClassifier(
-                n_clusters=3,
-                normalize_colors=False,  # Skip normalization for single frame
+                normalize_colors=False,
                 fast_mode=True
             )
-            # Note: For single frame, we need pre-trained model
-            # In practice, load a pre-trained model here
+        
+        # Try to load saved model if not trained
+        if not self.seafloor_classifier.has_trained_model():
+            model_path = self.seafloor_training_dir / "seafloor_model.pt"
+            config_path = self.seafloor_training_dir / "classifier_config.json"
+            
+            if model_path.exists():
+                try:
+                    self.status_label.setText("Carregando modelo treinado...")
+                    self.seafloor_classifier.load_model(str(model_path))
+                    if config_path.exists():
+                        self.seafloor_classifier.load_config(str(config_path))
+                except Exception as e:
+                    self.status_label.setText(f"Erro ao carregar modelo: {str(e)}")
+                    return
+            else:
+                self.status_label.setText(
+                    "Nenhum modelo treinado encontrado. "
+                    "Use 'Treinar com Dados Coletados' primeiro."
+                )
+                return
         
         try:
             result = self.seafloor_classifier.predict_single_frame(frame)
@@ -4432,7 +4480,7 @@ class VideoAnnotator(QMainWindow):
             
             self.display_frame(frame)
             self._update_info_panel(
-                f"🌊 {class_name}: {confidence:.2f}",
+                f" {class_name}: {confidence:.2f}",
                 color_hex=color_hex
             )
             
@@ -4449,31 +4497,54 @@ class VideoAnnotator(QMainWindow):
             self.detections_dock.add_detection(detection)
             
         except Exception as e:
-            self.status_label.setText(self.texts.get("seafloor_error", "Classification error: {}").format(str(e)))
+            self.status_label.setText(f"Erro na classificação: {str(e)}")
 
             pass
     def toggle_seafloor_realtime(self, enabled):
-        """Toggle real-time seafloor classification."""
+        """Ativa/desativa classificação em tempo real de fundo marinho."""
         self.seafloor_enabled = enabled
         
         if enabled:
+            # Initialize classifier
             if self.seafloor_classifier is None:
                 self.seafloor_classifier = SeafloorClassifier(
-                    n_clusters=3,
                     normalize_colors=False,
                     fast_mode=True
                 )
             
+            # Try to load saved model
+            if not self.seafloor_classifier.has_trained_model():
+                model_path = self.seafloor_training_dir / "seafloor_model.pt"
+                if model_path.exists():
+                    try:
+                        self.seafloor_classifier.load_model(str(model_path))
+                        config_path = self.seafloor_training_dir / "classifier_config.json"
+                        if config_path.exists():
+                            self.seafloor_classifier.load_config(str(config_path))
+                    except Exception as e:
+                        self.status_label.setText(f"Erro ao carregar modelo: {str(e)}")
+                        self.seafloor_enabled = False
+                        return
+                else:
+                    self.status_label.setText(
+                        "Modelo não encontrado. Treine primeiro com 'Treinar com Dados Coletados'."
+                    )
+                    self.seafloor_enabled = False
+                    return
+            
+            # Start thread in realtime mode
             self.seafloor_thread = SeafloorClassificationThread(self.seafloor_classifier)
+            self.seafloor_thread.set_realtime_mode()
             self.seafloor_thread.frame_classified.connect(self.on_seafloor_frame_classified)
             self.seafloor_thread.start()
             
-            self.status_label.setText(self.texts.get("seafloor_realtime_on", "Seafloor classification: ON"))
+            self.status_label.setText("Classificação de fundo: ATIVADA")
         else:
             if self.seafloor_thread:
                 self.seafloor_thread.stop()
+                self.seafloor_thread.wait(1000)
                 self.seafloor_thread = None
-            self.status_label.setText(self.texts.get("seafloor_realtime_off", "Seafloor classification: OFF"))
+            self.status_label.setText("Classificação de fundo: DESATIVADA")
 
     def on_seafloor_frame_classified(self, result, frame_num):
         """Handle real-time classification result."""
@@ -4483,8 +4554,14 @@ class VideoAnnotator(QMainWindow):
         # Update status
         class_name = result["class_name"]
         confidence = result["confidence"]
+        color_hex = result.get("color", "#1565C0")
+        shortcut = result.get("shortcut", "")
+        
         self.status_label.setText(self.texts.get("seafloor_label", "Seafloor: {} ({:.2f})").format(class_name, confidence))
-
+        
+        # Show in info panel above video with class color
+        label_text = f" [{shortcut}] {class_name}: {confidence:.2f}" if shortcut else f" {class_name}: {confidence:.2f}"
+        self._update_info_panel(label_text, color_hex=color_hex)
     def _update_seafloor_custom_menu(self, menu=None):
         """Atualiza o menu com classes customizadas do classificador."""
         if menu is None:
@@ -4544,7 +4621,7 @@ class VideoAnnotator(QMainWindow):
             color_hex = self.seafloor_classifier.class_colors[class_name]
 
         self._update_info_panel(
-            f"🌊 [{shortcut}] {class_name} — COLETANDO | Shift+S para parar",
+            f" [{shortcut}] {class_name} — COLETANDO | Shift+S para parar",
             color_hex=color_hex
         )
 
@@ -4643,7 +4720,7 @@ class VideoAnnotator(QMainWindow):
                 self.current_seafloor_class in self.seafloor_classifier.class_colors):
                 color_hex = self.seafloor_classifier.class_colors[self.current_seafloor_class]
             self._update_info_panel(
-                f"🌊 [{self.current_seafloor_shortcut}] {self.current_seafloor_class} | "
+                f" [{self.current_seafloor_shortcut}] {self.current_seafloor_class} | "
                 f"{total_saved} frames coletados | Shift+S para parar",
                 color_hex=color_hex
             )
@@ -4671,13 +4748,12 @@ class VideoAnnotator(QMainWindow):
 
     def train_seafloor_from_collected(self):
         """Treina classificador com frames coletados durante anotação de vídeo."""
-        # Verificar se há dados coletados
         if not self.seafloor_training_dir.exists():
             QMessageBox.warning(self, "Aviso", 
                 "Nenhum dado coletado. Use os atalhos S/F/R/1-9/0 durante o vídeo primeiro.")
             return
 
-        # Verificar se há imagens em pelo menos 2 classes
+        # Verificar classes com imagens
         class_dirs = [d for d in self.seafloor_training_dir.iterdir() 
                      if d.is_dir() and any(d.glob("*.jpg"))]
 
@@ -4687,36 +4763,46 @@ class VideoAnnotator(QMainWindow):
                 "São necessárias pelo menos 2.")
             return
 
-        # Inicializar classificador se necessário
+        # Inicializar classifier com classes descobertas
+        class_names = sorted([d.name for d in class_dirs])
+        
         if self.seafloor_classifier is None:
             self.seafloor_classifier = SeafloorClassifier(
-                class_names=[d.name for d in class_dirs],
+                custom_classes=[n for n in class_names 
+                               if n not in SeafloorClassifier.FIXED_CLASSES.values()],
                 normalize_colors=False,
                 fast_mode=True
             )
 
         try:
-            self.status_label.setText("Treinando classificador com dados coletados...")
+            self.status_label.setText("Treinando classificador...")
             QApplication.processEvents()
 
             results = self.seafloor_classifier.train_from_collected_data(
                 data_dir=str(self.seafloor_training_dir),
-                min_samples_per_class=5
+                min_samples_per_class=5,
+                parent_widget=self
             )
 
-            self.status_label.setText("Treinamento concluído!")
+            # Update menu with new classes
+            self._update_seafloor_custom_menu()
 
-            # Mostrar resultados
+            self.status_label.setText(
+                f"Treinamento concluído! Modelo salvo. "
+                f"Classes: {', '.join(results['class_names'])}"
+            )
+
             QMessageBox.information(self, "Concluído", 
                 f"Modelo treinado com sucesso!\n"
-                f"Classes: {', '.join(self.seafloor_classifier.class_names)}\n"
-                f"Dados salvos em: {self.seafloor_training_dir}")
+                f"Classes: {', '.join(results['class_names'])}\n"
+                f"Amostras: {results['n_samples']}\n"
+                f"Modelo: {results['model_path']}")
 
         except Exception as e:
             QMessageBox.critical(self, "Erro", f"Falha no treinamento: {str(e)}")
             import traceback
             traceback.print_exc()
-    
+
     def remove_annotation_from_history(self, ann):
         """Remove uma anotação do histórico principal (all_detections) e do dock."""
         # Remover de all_detections

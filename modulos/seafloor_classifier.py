@@ -595,7 +595,7 @@ class InteractiveLabelingDialog(QDialog):
         for (row, col), idx in grid_to_idx.items():
             img = self.images[idx]
             thumb = cv2.resize(img, (120, 120), interpolation=cv2.INTER_AREA)
-            thumb_rgb = cv2.cvtColor(thumb, cv2.COLOR_RGB2BGR)
+            thumb_rgb = thumb  # images already in RGB, no conversion needed
             
             h, w, ch = thumb_rgb.shape
             bytes_per_line = ch * w
@@ -1282,6 +1282,232 @@ class SeafloorClassifier:
         self._refresh_cluster_dirs()
         return config
 
+
+    # -------------------------------------------------------------------------
+    # MÉTODOS NOVOS: Carregar imagens de pasta
+    # -------------------------------------------------------------------------
+
+    def load_images_from_folder(self, folder_path):
+        """Carrega imagens de uma pasta para classificação."""
+        folder = Path(folder_path)
+        image_paths = []
+        for ext in ["*.jpg", "*.jpeg", "*.png", "*.bmp", "*.tif", "*.tiff"]:
+            image_paths.extend(folder.glob(ext))
+            image_paths.extend(folder.glob(ext.upper()))
+
+        image_paths = sorted(image_paths)
+        if not image_paths:
+            raise ValueError(f"Nenhuma imagem encontrada em: {folder_path}")
+
+        images_raw = []
+        images_rgb = []
+        image_names = []
+
+        for p in image_paths:
+            img = cv2.imread(str(p))
+            if img is None:
+                continue
+            images_raw.append(img)
+            images_rgb.append(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+            image_names.append(p.name)
+
+        if not images_raw:
+            raise ValueError(f"Nenhuma imagem válida carregada de: {folder_path}")
+
+        print(f"  Carregadas {len(images_raw)} imagens de {folder_path}")
+        return images_raw, images_rgb, image_names
+
+    # -------------------------------------------------------------------------
+    # MÉTODOS NOVOS: Persistência do modelo treinado
+    # -------------------------------------------------------------------------
+
+    def save_model(self, path=None):
+        """Salva o modelo treinado + configuração para uso posterior."""
+        if self.trained_classifier is None:
+            raise ValueError("Nenhum modelo treinado para salvar!")
+
+        path = Path(path) if path else (self.output_dir / "seafloor_model.pt")
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        checkpoint = {
+            "model_state_dict": self.trained_classifier.model.state_dict(),
+            "n_classes": self.trained_classifier.n_classes,
+            "class_names": self.class_names,
+            "class_colors": self.class_colors,
+            "custom_classes": self.custom_classes,
+            "custom_colors": self.custom_colors,
+            "fixed_class_names": self.fixed_class_names,
+            "fixed_colors": self.fixed_colors,
+            "n_clusters": self.n_clusters,
+            "crop_to_299": self.crop_to_299,
+            "crop_ratio": self.crop_ratio,
+            "normalize_colors": self.normalize_colors,
+            "use_hierarchical": self.use_hierarchical,
+            "entropy_margin": self.entropy_margin,
+            "ref_mean": self.normalizer.ref_mean.tolist() if (self.normalizer and self.normalizer.ref_mean is not None) else None,
+            "ref_std": self.normalizer.ref_std.tolist() if (self.normalizer and self.normalizer.ref_std is not None) else None,
+            "reference_path": str(self.normalizer.reference_path) if self.normalizer else None,
+        }
+
+        torch.save(checkpoint, str(path))
+        print(f"  Modelo salvo em: {path}")
+        return str(path)
+
+    def load_model(self, path):
+        """Carrega um modelo treinado previamente salvo."""
+        path = Path(path)
+        if not path.exists():
+            raise FileNotFoundError(f"Modelo não encontrado: {path}")
+
+        checkpoint = torch.load(str(path), map_location="cpu", weights_only=True)
+
+        # Restaurar configuração
+        self.class_names = checkpoint.get("class_names", self.class_names)
+        self.class_colors = checkpoint.get("class_colors", self.class_colors)
+        self.custom_classes = checkpoint.get("custom_classes", {})
+        self.custom_colors = checkpoint.get("custom_colors", {})
+        self.fixed_class_names = checkpoint.get("fixed_class_names", self.fixed_class_names)
+        self.fixed_colors = checkpoint.get("fixed_colors", self.fixed_colors)
+        self.n_clusters = checkpoint.get("n_clusters", self.n_clusters)
+        self.crop_to_299 = checkpoint.get("crop_to_299", self.crop_to_299)
+        self.crop_ratio = checkpoint.get("crop_ratio", self.crop_ratio)
+        self.normalize_colors = checkpoint.get("normalize_colors", self.normalize_colors)
+        self.use_hierarchical = checkpoint.get("use_hierarchical", self.use_hierarchical)
+        self.entropy_margin = checkpoint.get("entropy_margin", self.entropy_margin)
+
+        # Restaurar normalizador
+        ref_mean = checkpoint.get("ref_mean")
+        ref_std = checkpoint.get("ref_std")
+        ref_path = checkpoint.get("reference_path")
+
+        if ref_mean is not None and ref_std is not None:
+            if self.normalizer is None:
+                self.normalizer = ColorNormalizer(reference_path=ref_path)
+            self.normalizer.ref_mean = np.array(ref_mean, dtype=np.float32)
+            self.normalizer.ref_std = np.array(ref_std, dtype=np.float32)
+
+        # Recriar classificador
+        n_classes = checkpoint.get("n_classes", len(self.class_names))
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        self.trained_classifier = FastInceptionV3Classifier(
+            n_classes=n_classes,
+            device=device,
+            freeze_backbone=False
+        )
+        self.trained_classifier.model.load_state_dict(checkpoint["model_state_dict"])
+        self.trained_classifier.model.eval()
+
+        self.entropy_classifier.class_names = self.class_names
+
+        print(f"  Modelo carregado de: {path}")
+        print(f"  Classes: {self.class_names}")
+        return True
+
+    def has_trained_model(self):
+        """Verifica se existe um modelo treinado carregado."""
+        return self.trained_classifier is not None
+
+    # -------------------------------------------------------------------------
+    # MÉTODO NOVO: Treinar a partir de dados coletados
+    # -------------------------------------------------------------------------
+
+    def train_from_collected_data(self, data_dir, min_samples_per_class=5,
+                                   parent_widget=None, epochs_phase1=8,
+                                   epochs_phase2=15):
+        """
+        Treina o classificador a partir de frames coletados durante anotação.
+        """
+        data_dir = Path(data_dir)
+        if not data_dir.exists():
+            raise ValueError(f"Diretório não encontrado: {data_dir}")
+
+        # Descobrir classes a partir das subpastas
+        class_dirs = [d for d in data_dir.iterdir()
+                      if d.is_dir() and any(d.glob("*.jpg"))]
+
+        if len(class_dirs) < 2:
+            raise ValueError(
+                f"São necessárias pelo menos 2 classes com imagens. "
+                f"Encontradas: {len(class_dirs)}"
+            )
+
+        # Atualizar classes do classificador
+        class_names_from_dirs = sorted([d.name for d in class_dirs])
+
+        # Separar fixas de customizadas
+        new_custom = [n for n in class_names_from_dirs if n not in self.fixed_class_names]
+
+        # Resetar classes customizadas
+        self.custom_classes = {}
+        self.custom_colors = {}
+        for i, name in enumerate(new_custom):
+            if i < len(self.CUSTOM_SHORTCUTS):
+                shortcut = self.CUSTOM_SHORTCUTS[i]
+                self.custom_classes[shortcut] = name
+                self.custom_colors[name] = self._generate_color(name)
+
+        self.class_names = self.fixed_class_names + list(self.custom_classes.values())
+        self.class_colors = {**self.fixed_colors, **self.custom_colors}
+        self.n_clusters = len(self.class_names)
+        self.entropy_classifier.class_names = self.class_names
+        self._refresh_cluster_dirs()
+
+        # Carregar todas as imagens
+        images_raw = []
+        images_rgb = []
+        image_names = []
+        labels = []
+
+        print(f"\n--- Carregando dados de treinamento ---")
+        for class_id, class_name in enumerate(self.class_names):
+            class_dir = data_dir / class_name
+            if not class_dir.exists():
+                continue
+
+            class_images = []
+            for ext in ["*.jpg", "*.jpeg", "*.png"]:
+                class_images.extend(class_dir.glob(ext))
+
+            if len(class_images) < min_samples_per_class:
+                print(f"  AVISO: Classe '{class_name}' tem apenas {len(class_images)} imagens")
+
+            for img_path in sorted(class_images):
+                img = cv2.imread(str(img_path))
+                if img is None:
+                    continue
+                images_raw.append(img)
+                images_rgb.append(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+                image_names.append(img_path.name)
+                labels.append(class_id)
+
+        if len(images_raw) < min_samples_per_class * 2:
+            raise ValueError(f"Dados insuficientes: apenas {len(images_raw)} imagens totais")
+
+        print(f"  Total: {len(images_raw)} imagens, classes: {self.class_names}")
+
+        labels = np.array(labels)
+
+        # Executar workflow completo
+        supervised_preds, unsupervised_preds, confidences = self.classify_images(
+            images_rgb=np.array(images_rgb),
+            images_raw=np.array(images_raw),
+            image_names=image_names,
+            folder_path=str(data_dir),
+            parent_widget=parent_widget
+        )
+
+        # Salvar modelo
+        model_path = self.save_model(data_dir / "seafloor_model.pt")
+        config_path = self.save_config(data_dir / "classifier_config.json")
+
+        return {
+            "model_path": model_path,
+            "config_path": str(config_path),
+            "class_names": self.class_names,
+            "n_samples": len(images_raw),
+        }
+
     # -------------------------------------------------------------------------
     # MÉTODO MODIFICADO: predict_single_frame
     # -------------------------------------------------------------------------
@@ -1638,43 +1864,8 @@ class SeafloorClassifier:
         plt.savefig(out, dpi=200, bbox_inches='tight')
         plt.close()
 
-    def predict_single_frame(self, frame_bgr):
-        if self.trained_classifier is None:
-            raise ValueError("Classifier not trained yet!")
-
-        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-
-        # Aplicar crop se configurado
-        if self.crop_to_299 and self.cropper is not None:
-            cropped, _ = self.cropper.crop(frame_bgr)
-            frame_bgr = cropped
-            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-
-        if self.normalize_colors and self.normalizer and self.normalizer.ref_mean is not None:
-            frame_norm_bgr = self.normalizer.normalize(frame_bgr)
-            frame_rgb = cv2.cvtColor(frame_norm_bgr, cv2.COLOR_BGR2RGB)
-
-        # NOVO: Classificador hierárquico (se ativado)
-        if self.use_hierarchical and self.hierarchical_classifier is not None:
-            # Simplificado: usar CNN direto por enquanto
-            preds, confs = self.trained_classifier.predict([frame_rgb], batch_size=1)
-        else:
-            preds, confs = self.trained_classifier.predict([frame_rgb], batch_size=1)
-            
-        class_id = int(preds[0])
-        confidence = float(confs[0])
-        class_name = self.class_names[class_id] if class_id < len(self.class_names) else f"Class_{class_id}"
-
-        return {
-            "class_id": class_id,
-            "class_name": class_name,
-            "confidence": confidence,
-            "color": self.COLORS.get(class_name, "#FFFFFF")
-        }
-
-
 # =============================================================================
-# QTHREAD - COM SUPORTE A INTERAÇÃO
+# QTHREAD - CLASSIFICAÇÃO EM TEMPO REAL
 # =============================================================================
 
 class SeafloorClassificationThread(QThread):
@@ -1708,6 +1899,9 @@ class SeafloorClassificationThread(QThread):
         self.mode = "batch"
         self.batch_folder = folder_path
 
+    def set_realtime_mode(self):
+        self.mode = "realtime"
+
     def stop(self):
         with QMutexLocker(self.mutex):
             self.running = False
@@ -1716,60 +1910,90 @@ class SeafloorClassificationThread(QThread):
     def run(self):
         if self.mode == "batch":
             self._run_batch()
-        else:
+        elif self.mode == "realtime":
             self._run_realtime()
 
     def _run_batch(self):
         try:
-            self.status.emit("Loading images...")
+            self.status.emit("Carregando imagens...")
             images_raw, images_rgb, image_names = self.classifier.load_images_from_folder(
                 self.batch_folder
             )
 
-            self.status.emit("Computing domain features + PCA...")
+            self.status.emit("Computando features + PCA...")
             features = self.classifier.labeler.extract_domain_features(images_rgb)
             features_scaled = StandardScaler().fit_transform(features)
             pca_2d = PCA(n_components=2).fit_transform(features_scaled)
 
-            # Interactive labeling must run on main thread
-            self.status.emit("Waiting for user to select training examples...")
+            self.status.emit("Aguardando seleção do usuário...")
             self._interactive_result = None
-            
+
             self.request_interactive_labeling.emit(
                 images_rgb, image_names, pca_2d, 
                 self.classifier.n_clusters, self.classifier.class_names
             )
-            
+
             import time
-            for _ in range(300):  # 30 seconds timeout
+            for _ in range(300):
                 if self._interactive_result is not None:
                     break
                 time.sleep(0.1)
-            
+
             if self._interactive_result is None:
-                self.finished_signal.emit(False, None, "Timeout waiting for user selection")
+                self.finished_signal.emit(False, None, "Timeout aguardando seleção")
                 return
 
             self.classifier.labeler.labels = self._interactive_result
             self.classifier.labeler.expand_labels_nearest_neighbors(images_rgb, n_neighbors=50)
 
-            self.status.emit("Training classifier...")
-            
+            self.status.emit("Treinando classificador...")
+
             results = {
                 "labels": self.classifier.labeler.labels,
                 "class_names": self.classifier.class_names
             }
-            self.finished_signal.emit(True, results, "Workflow complete!")
+            self.finished_signal.emit(True, results, "Workflow completo!")
 
         except Exception as e:
             import traceback
-            self.finished_signal.emit(False, None, f"Error: {str(e)}\n{traceback.format_exc()}")
+            self.finished_signal.emit(False, None, f"Erro: {str(e)}\n{traceback.format_exc()}")
 
+    def _run_realtime(self):
+        """Classifica frames da fila usando modelo já treinado."""
+        if not self.classifier.has_trained_model():
+            self.status.emit("ERRO: Nenhum modelo treinado carregado!")
+            self.finished_signal.emit(False, None, "Modelo não carregado")
+            return
 
-# =============================================================================
-# DIALOG PRINCIPAL
-# =============================================================================
+        self.status.emit("Classificação em tempo real iniciada")
+        self._paused = False  # Flag for pause/resume with video
+        processed_count = 0
 
+        while self.running:
+            # Check if paused (video is paused)
+            if getattr(self, '_paused', False):
+                import time
+                time.sleep(0.1)
+                continue
+
+            with QMutexLocker(self.mutex):
+                if not self.frames:
+                    self.condition.wait(self.mutex, 100)
+                    continue
+                frame_bgr, frame_num = self.frames.pop(0)
+
+            try:
+                result = self.classifier.predict_single_frame(frame_bgr)
+                processed_count += 1
+                if processed_count <= 3:
+                    self.status.emit(f"DEBUG: Frame {frame_num} classificado como {result['class_name']} ({result['confidence']:.2f})")
+                self.frame_classified.emit(result, frame_num)
+            except Exception as e:
+                import traceback
+                self.status.emit(f"Erro na classificação: {str(e)}\n{traceback.format_exc()}")
+
+        self.status.emit(f"Classificação finalizada. {processed_count} frames processados.")
+        self.finished_signal.emit(True, None, "Classificação em tempo real finalizada")
 class SeafloorClassificationDialog(QDialog):
     def __init__(self, parent=None, language="pt"):
         super().__init__(parent)
