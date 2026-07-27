@@ -542,12 +542,15 @@ class TaxonomyEnrichmentDialog(QDialog):
     
     def _select_file(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "Selecionar anotações CSV", "", "CSV Files (*.csv)"
+            self, 
+            "Selecionar anotações CSV", 
+            "", 
+            "CSV Files (*.csv *.CSV);;Text Files (*.txt);;All Files (*)"
         )
         
         if path:
             self.input_file = path
-            self.input_type = 'csv'  # NOVO: Flag
+            self.input_type = 'csv'
             self.file_path.setText(Path(path).name)
             self.file_path.setStyleSheet("color: black; font-style: normal;")
             self.start_btn.setEnabled(True)

@@ -1,0 +1,37 @@
+{
+  "h_mAP": 0.31943277310924373,
+  "traditional_mAP": 0.3172268907563025,
+  "mean_iou": 0.23531853422329727,
+  "standard_mAP50": 0.2734743207576893,
+  "sample_size": 70,
+  "total_evaluated": 476,
+  "breakdown": {
+    "unrelated": 319,
+    "exact": 151,
+    "common_order": 3,
+    "common_kingdom": 2,
+    "common_phylum": 1
+  },
+  "h_mAP_per_rank": {
+    "order": 0.5170068027210885,
+    "family": 0.14235537190082645,
+    "genus": 0.5882352941176471,
+    "unknown": 0.0,
+    "species": 0.34021739130434786,
+    "class": 0.6,
+    "phylum": 0.25
+  },
+  "taxonomy_coverage": {
+    "with_hierarchy": 379,
+    "without_hierarchy": 97,
+    "total": 476,
+    "coverage_pct": 79.62184873949579
+  },
+  "timestamp": "2026-07-23T16:19:02.534938",
+  "config": {
+    "data": "C:/Users/rneveslopes/Desktop/Backup/teste1\\dataset.yaml",
+    "epochs": 100,
+    "imgsz": 640,
+    "model": "yolo26n.pt"
+  }
+}

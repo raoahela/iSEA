@@ -1,7 +1,6 @@
 """
-Seafloor Classification Module for iSEA
-Integrates AI-SCW workflow into the iSEA video annotation platform
-Classes: Sedimento, Coral_Fragmento, Coral_Vivo
+Seafloor Classification Module for iSEA 
+Classes: Sedimento, Coral_Fragmento, Coral_Vivo + custom classes
 """
 
 import cv2
@@ -19,6 +18,7 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from sklearn.neighbors import NearestNeighbors
 from sklearn.metrics import cohen_kappa_score, confusion_matrix
+from sklearn.model_selection import train_test_split
 from scipy.optimize import linear_sum_assignment
 import torch
 import torch.nn as nn
@@ -27,7 +27,7 @@ from torchvision import models
 from torch.utils.data import Dataset, DataLoader
 from torch.cuda.amp import autocast, GradScaler
 import matplotlib
-matplotlib.use('Qt5Agg')  # Use Qt backend so it works inside PyQt6 app
+matplotlib.use('Qt5Agg')
 import matplotlib.pyplot as plt
 from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 
@@ -41,12 +41,16 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
 from PyQt6.QtGui import QImage, QPixmap, QColor, QIcon
 
 
+# =============================================================================
+# CENTER CROP TO 299x299
+# =============================================================================
+
 class CenterCropTo299:
     """Crop central para 299×299, removendo bordas escuras."""
     def __init__(self, crop_ratio=0.85):
         self.crop_ratio = np.clip(crop_ratio, 0.3, 1.0)
         self.target_size = 299
-    
+
     def crop(self, img):
         h, w = img.shape[:2]
         region_h = int(h * self.crop_ratio)
@@ -55,10 +59,10 @@ class CenterCropTo299:
         x1 = (w - region_w) // 2
         y2 = y1 + region_h
         x2 = x1 + region_w
-        
+
         region = img[y1:y2, x1:x2].copy()
         rh, rw = region.shape[:2]
-        
+
         if rh >= self.target_size and rw >= self.target_size:
             cy = (rh - self.target_size) // 2
             cx = (rw - self.target_size) // 2
@@ -69,18 +73,18 @@ class CenterCropTo299:
             new_w = int(rw * scale)
             new_h = int(rh * scale)
             resized = cv2.resize(region, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
-            
+
             result = np.zeros((self.target_size, self.target_size, 3), dtype=np.uint8)
             y_off = (self.target_size - new_h) // 2
             x_off = (self.target_size - new_w) // 2
             result[y_off:y_off+new_h, x_off:x_off+new_w] = resized
             method = "resize+pad"
-        
+
         return result, {
             'original': (w, h), 'region': (rw, rh),
             'method': method, 'crop_box': (x1, y1, x2, y2)
         }
-    
+
     def crop_batch(self, images, image_names):
         cropped = []
         infos = []
@@ -92,7 +96,7 @@ class CenterCropTo299:
 
 
 # =============================================================================
-# COLOR NORMALIZATION 
+# COLOR NORMALIZATION
 # =============================================================================
 
 class ColorNormalizer:
@@ -152,10 +156,11 @@ class ColorNormalizer:
 
 
 # =============================================================================
-# DATA AUGMENTATION
+# DATA AUGMENTATION (ONLY applied to training set AFTER split)
 # =============================================================================
 
 def augment_image(img):
+    """Apply random augmentation to a single image."""
     aug_img = img.copy()
     if np.random.rand() > 0.5:
         aug_img = cv2.flip(aug_img, 1)
@@ -171,14 +176,116 @@ def augment_image(img):
     return aug_img
 
 
+def balance_classes_by_augmentation(X_train, y_train, augment_factor=3, max_oversample_ratio=2.0):
+    """
+    Balance training classes by creating augmented copies.
+    ONLY called AFTER train/val/test split, on training set only.
+    """
+    counts = Counter(y_train)
+    max_count = max(counts.values())
+
+    # Cap the target to avoid extreme oversampling
+    target_count = min(max_count, int(min(counts.values()) * max_oversample_ratio))
+    target_count = max(target_count, max_count)
+
+    X_balanced, y_balanced = [], []
+
+    for cls in sorted(counts.keys()):
+        cls_indices = np.where(y_train == cls)[0]
+        cls_images = [X_train[i] for i in cls_indices]
+        cls_count = len(cls_images)
+
+        # Add originals
+        X_balanced.extend(cls_images)
+        y_balanced.extend([cls] * cls_count)
+
+        # Calculate how many augmented samples needed
+        n_needed = target_count - cls_count
+        if n_needed <= 0:
+            continue
+
+        n_augment = min(n_needed * augment_factor, int(cls_count * max_oversample_ratio))
+        n_augment = max(n_augment, n_needed)
+
+        for _ in range(n_augment):
+            img = cls_images[np.random.randint(len(cls_images))]
+            aug_img = augment_image(img)
+            X_balanced.append(aug_img)
+            y_balanced.append(cls)
+
+    return np.array(X_balanced), np.array(y_balanced)
+
+
 # =============================================================================
-# ENTROPY CLASSIFIER (NOVO - de image_clustering2.py)
+# DEEP FEATURE EXTRACTOR (for PCA visualization and k-NN expansion)
+# =============================================================================
+
+class DeepFeatureExtractor:
+    """
+    Extracts 2048-dimensional features from InceptionV3 avg_pool layer.
+    These features represent what the network "sees" and are used for:
+    1. PCA visualization for user example selection
+    2. k-NN label expansion
+    3. Unsupervised clustering
+
+    CRITICAL: This is the SAME feature space the classifier will learn,
+    ensuring user selection is relevant to the model.
+    """
+    def __init__(self, device=None):
+        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self._setup_model()
+
+    def _setup_model(self):
+        self.model = models.inception_v3(weights=models.Inception_V3_Weights.DEFAULT)
+        # Replace fc with Identity to get 2048-dim features from avg_pool
+        self.model.fc = nn.Identity()
+        self.model = self.model.to(self.device).eval()
+
+        self.preprocess = transforms.Compose([
+            transforms.ToPILImage(),
+            transforms.Resize(299),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], 
+                             std=[0.229, 0.224, 0.225]),
+        ])
+
+    def extract(self, images, batch_size=32):
+        """Extract deep features from images."""
+        features = []
+        with torch.no_grad():
+            for i in range(0, len(images), batch_size):
+                batch = images[i:i + batch_size]
+                tensors = []
+                for img in batch:
+                    if len(img.shape) == 2:
+                        img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
+                    elif img.shape[2] == 4:
+                        img = cv2.cvtColor(img, cv2.COLOR_RGBA2RGB)
+                    elif img.shape[2] == 3 and isinstance(img, np.ndarray):
+                        # Assume BGR from OpenCV, convert to RGB
+                        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                    tensors.append(self.preprocess(img))
+
+                batch_tensor = torch.stack(tensors).to(self.device)
+                feats = self.model(batch_tensor).cpu().numpy()
+                features.extend(feats)
+
+        return np.array(features)
+
+    def extract_single(self, img):
+        """Extract features from a single image."""
+        return self.extract([img])[0]
+
+
+# =============================================================================
+# ENTROPY CLASSIFIER (Independent baseline model)
 # =============================================================================
 
 class EntropyClassifier:
     """
     Classificador baseado em entropia com thresholds otimizados para S/F/R.
-    Usado para pseudo-labeling e classificador hierárquico.
+    Usado como modelo baseline INDEPENDENTE — NÃO guia a seleção do CNN.
+    As 21 features manuais pertencem a este classificador, não ao CNN.
     """
     def __init__(self, thresholds=(6.471, 6.980), class_names=None):
         self.thresholds = thresholds
@@ -186,7 +293,6 @@ class EntropyClassifier:
         self.entropies = None
         self.pseudo_labels = None
         self.confidence_scores = None
-        self.entropy_features = None
 
     def compute_entropies(self, images):
         self.entropies = []
@@ -213,17 +319,16 @@ class EntropyClassifier:
             self.compute_entropies(images)
         labels = np.full(len(self.entropies), -1, dtype=int)
         confidences = np.zeros(len(self.entropies))
-        class_centers = [6.192, 6.750, 7.209]  # Centros conhecidos S/F/R
-        
+        class_centers = [6.192, 6.750, 7.209]
+
         for i, e in enumerate(self.entropies):
             dists = [abs(e - c) for c in class_centers]
             min_dist = min(dists)
             sorted_dists = sorted(dists)
-            # Só aceita se estiver próximo do centro E longe do vizinho mais próximo
             if min_dist < margin and (sorted_dists[1] - min_dist) > margin * 0.5:
                 labels[i] = np.argmin(dists)
                 confidences[i] = 1.0 - (min_dist / margin)
-        
+
         self.pseudo_labels = labels
         self.confidence_scores = confidences
         return labels, confidences
@@ -271,20 +376,21 @@ class EntropyClassifier:
 
 
 # =============================================================================
-# SEMI-AUTOMATIC LABELER 
+# MANUAL FEATURE EXTRACTOR (21 features - ONLY for EntropyClassifier analysis)
 # =============================================================================
 
-class SemiAutoLabeler:
-    def __init__(self, n_examples_per_class=10):
-        self.n_examples = n_examples_per_class
-        self.labels = {}
-        self.class_names = {}
+class ManualFeatureExtractor:
+    """
+    Extrai as 21 características manuais (entropia, brilho, textura, etc.)
+    Usadas APENAS para:
+    - Análise exploratória do EntropyClassifier
+    - Baseline independente
+    - NUNCA para guiar seleção de exemplos do CNN
+    """
+    def __init__(self):
+        pass
 
-    def extract_domain_features(self, images):
-        """
-        Features AVANÇADAS otimizadas para separar S/F/R.
-        Entropia replicada para dar peso dominante no PCA.
-        """
+    def extract(self, images):
         features = []
         for img in images:
             if len(img.shape) == 3:
@@ -294,10 +400,9 @@ class SemiAutoLabeler:
 
             h, w = gray.shape
 
-            # ===== ENTROPIA (peso máximo - replicada 4x) =====
+            # Entropia (replicada para peso)
             global_entropy = shannon_entropy(gray)
 
-            # Entropia em múltiplas escalas
             if h > 64 and w > 64:
                 small = cv2.resize(gray, (w//4, h//4), interpolation=cv2.INTER_AREA)
                 med = cv2.resize(gray, (w//2, h//2), interpolation=cv2.INTER_AREA)
@@ -307,24 +412,22 @@ class SemiAutoLabeler:
                 ent_small = global_entropy
                 ent_med = global_entropy
 
-            # Entropia por quadrantes (heterogeneidade espacial)
+            # Quadrantes
             q1 = gray[:h//2, :w//2]
             q2 = gray[:h//2, w//2:]
             q3 = gray[h//2:, :w//2]
             q4 = gray[h//2:, w//2:]
             quad_ents = [shannon_entropy(q) for q in [q1, q2, q3, q4] if q.size > 0]
 
-            # Entropia do gradiente (bordas = complexidade)
+            # Gradiente
             sobelx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
             sobely = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
             grad_mag = np.sqrt(sobelx**2 + sobely**2)
             grad_entropy = shannon_entropy((grad_mag / (grad_mag.max() + 1e-8) * 255).astype(np.uint8))
 
-            # ===== ESTATÍSTICAS DE INTENSIDADE =====
+            # Estatísticas
             mean_int = np.mean(gray)
             std_int = np.std(gray)
-
-            # Histograma normalizado (percentis compactos)
             hist = cv2.calcHist([gray], [0], None, [32], [0, 256]).flatten()
             hist = hist / (hist.sum() + 1e-10)
             cumhist = np.cumsum(hist)
@@ -332,58 +435,69 @@ class SemiAutoLabeler:
             p50 = np.searchsorted(cumhist, 0.50) * 8
             p75 = np.searchsorted(cumhist, 0.75) * 8
 
-            # ===== GLCM (textura com 2 distâncias/ângulos) =====
+            # GLCM
             glcm = graycomatrix(gray, distances=[1, 2], angles=[0, np.pi/4], 
                                levels=256, symmetric=True, normed=True)
             contrast = graycoprops(glcm, 'contrast').mean()
             homogeneity = graycoprops(glcm, 'homogeneity').mean()
             energy = graycoprops(glcm, 'energy').mean()
 
-            # ===== MONTAR FEATURE VECTOR =====
+            # Feature vector
             entropy_features = [global_entropy] * 4 + [ent_small, ent_med, grad_entropy]
             spatial_features = quad_ents + [np.mean(quad_ents), np.std(quad_ents)]
             intensity_features = [mean_int, std_int, p25, p50, p75]
             texture_features = [contrast, homogeneity, energy]
 
             feat = np.concatenate([
-                entropy_features,      # 7 features (peso máximo)
-                spatial_features,      # 6 features
-                intensity_features,    # 5 features
-                texture_features       # 3 features
+                entropy_features, spatial_features, intensity_features, texture_features
             ])
             features.append(feat)
 
-        features = np.array(features)
-        print(f"  Domain features: {features.shape[1]} dims (entropy={7}, spatial={6}, intensity={5}, texture={3})")
-        return features
+        return np.array(features)
+
+
+# =============================================================================
+# SEMI-AUTOMATIC LABELER (REVISED - uses DEEP FEATURES for PCA and k-NN)
+# =============================================================================
+
+class SemiAutoLabeler:
+    def __init__(self, n_examples_per_class=10):
+        self.n_examples = n_examples_per_class
+        self.labels = {}
+        self.class_names = {}
+        self.deep_feature_extractor = None
+
+    def set_deep_feature_extractor(self, extractor):
+        """Set the deep feature extractor for PCA and k-NN."""
+        self.deep_feature_extractor = extractor
 
     def interactive_labeling_qt(self, images, image_names, pca_2d, n_classes, 
                                  class_names_list=None, parent_widget=None):
         """
-        INTERACTIVE labeling usando Qt Dialog (não bloqueante).
+        INTERACTIVE labeling usando Qt Dialog.
+        pca_2d MUST be computed from DEEP FEATURES (InceptionV3), not manual features.
         """
         if class_names_list is None:
             class_names_list = [f"Class_{i}" for i in range(n_classes)]
 
         all_labels = {}
-        
+
         for cls in range(n_classes):
             cls_name = class_names_list[cls] if cls < len(class_names_list) else f"Class_{cls}"
             self.class_names[cls] = cls_name
-            
+
             dialog = InteractiveLabelingDialog(
                 images, image_names, pca_2d, cls_name, cls,
                 self.n_examples, parent=parent_widget
             )
-            
+
             result = dialog.exec()
-            
+
             if result == QDialog.DialogCode.Accepted and dialog.selected_indices:
                 for idx in dialog.selected_indices:
                     all_labels[idx] = cls
                 print(f"  '{cls_name}': {len(dialog.selected_indices)} examples selected by user")
             else:
-                # Fallback to auto-selection
                 auto = self._auto_select_uniform(pca_2d, images, cls,
                                                  exclude=list(all_labels.keys()))
                 for idx in auto[:self.n_examples]:
@@ -415,14 +529,33 @@ class SemiAutoLabeler:
         return selected
 
     def expand_labels_nearest_neighbors(self, images, n_neighbors=50):
-        features = self.extract_domain_features(images)
-        features_scaled = StandardScaler().fit_transform(features)
-        features_pca = PCA(n_components=min(50, features_scaled.shape[1])).fit_transform(features_scaled)
+        """
+        Expand labels using k-NN in DEEP FEATURE space (not manual features).
+        This ensures expanded labels are consistent with what the CNN sees.
+        """
+        if self.deep_feature_extractor is None:
+            raise ValueError("Deep feature extractor not set. Call set_deep_feature_extractor() first.")
+
+        # Extract deep features for ALL images
+        print("  Extracting deep features for k-NN label expansion...")
+        deep_features = self.deep_feature_extractor.extract(images)
+
+        # Scale deep features
+        scaler = StandardScaler()
+        features_scaled = scaler.fit_transform(deep_features)
+
+        # Optional: reduce to 50 dims with PCA for k-NN efficiency
+        n_components = min(50, features_scaled.shape[0], features_scaled.shape[1])
+        if n_components < features_scaled.shape[1]:
+            pca = PCA(n_components=n_components)
+            features_pca = pca.fit_transform(features_scaled)
+        else:
+            features_pca = features_scaled
 
         labeled_indices = list(self.labels.keys())
         if len(labeled_indices) == 0:
             return self.labels
-            
+
         labeled_features = features_pca[labeled_indices]
 
         nn = NearestNeighbors(n_neighbors=min(n_neighbors, len(labeled_indices)), 
@@ -450,7 +583,11 @@ class SemiAutoLabeler:
         self.labels = new_labels
         return new_labels
 
-    def get_training_data_balanced(self, images, image_names, augment_factor=3):
+    def get_training_data(self, images, image_names):
+        """
+        Get labeled training data WITHOUT augmentation.
+        Augmentation is applied LATER, after train/val split.
+        """
         X_train, y_train, names_train = [], [], []
         for idx, label in self.labels.items():
             X_train.append(images[idx])
@@ -462,35 +599,16 @@ class SemiAutoLabeler:
         label_map = {old: new for new, old in enumerate(unique_labels)}
         y_train = np.array([label_map[l] for l in y_train])
 
-        class_counts = Counter(y_train)
-        max_count = max(class_counts.values())
-
-        X_balanced, y_balanced = [], []
-        for cls in unique_labels:
-            cls_indices = np.where(y_train == cls)[0]
-            cls_images = [X_train[i] for i in cls_indices]
-            cls_count = len(cls_images)
-
-            X_balanced.extend(cls_images)
-            y_balanced.extend([cls] * cls_count)
-
-            n_augment = min((max_count - cls_count) * augment_factor, max_count * 2)
-            for _ in range(n_augment):
-                img = cls_images[np.random.randint(len(cls_images))]
-                aug_img = augment_image(img)
-                X_balanced.append(aug_img)
-                y_balanced.append(cls)
-
-        return np.array(X_balanced), np.array(y_balanced), names_train
+        return np.array(X_train), y_train, names_train
 
 
 # =============================================================================
-# INTERACTIVE LABELING DIALOG 
+# INTERACTIVE LABELING DIALOG
 # =============================================================================
 
 class InteractiveLabelingDialog(QDialog):
     """Dialog for interactive selection of training examples per class."""
-    
+
     def __init__(self, images, image_names, pca_2d, class_name, class_id,
                  n_examples, parent=None):
         super().__init__(parent)
@@ -501,26 +619,24 @@ class InteractiveLabelingDialog(QDialog):
         self.class_id = class_id
         self.n_examples = n_examples
         self.selected_indices = []
-        
+
         self.setWindowTitle(f"Selecionar exemplos: {class_name}")
         self.resize(900, 700)
-        
+
         self._build_ui()
         self._populate_grid()
-        
+
     def _build_ui(self):
         layout = QVBoxLayout(self)
-        
-        # Instructions
+
         self.instruction = QLabel(
             f"<b>Clique nas imagens para selecionar exemplos de '{self.class_name}'</b><br>"
             f"Selecionados: <span style='color: red;'>0/{self.n_examples}</span><br>"
-            f"Selecione imagens que representam bem a classe, espalhadas por diferentes regiões."
+            f"<i>PCA calculado sobre deep features da InceptionV3 (2048 dims)</i>"
         )
         self.instruction.setWordWrap(True)
         layout.addWidget(self.instruction)
-        
-        # Scroll area for thumbnails
+
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         self.grid_widget = QWidget()
@@ -528,42 +644,39 @@ class InteractiveLabelingDialog(QDialog):
         self.grid_layout.setSpacing(5)
         scroll.setWidget(self.grid_widget)
         layout.addWidget(scroll)
-        
-        # Buttons
+
         btn_layout = QHBoxLayout()
-        
+
         self.auto_btn = QPushButton("Auto-selecionar")
         self.auto_btn.setToolTip("Deixar o algoritmo escolher automaticamente")
         self.auto_btn.clicked.connect(self._auto_select)
-        
+
         self.done_btn = QPushButton("Concluir")
         self.done_btn.setEnabled(False)
         self.done_btn.clicked.connect(self.accept)
-        
+
         btn_layout.addWidget(self.auto_btn)
         btn_layout.addStretch()
         btn_layout.addWidget(self.done_btn)
         layout.addLayout(btn_layout)
-        
+
     def _populate_grid(self):
-        """Create thumbnail buttons from images distributed in PCA space."""
         n_cols = 6
         n_rows_grid = (len(self.images) + n_cols - 1) // n_cols
-        
+
         x_min, x_max = self.pca_2d[:, 0].min(), self.pca_2d[:, 0].max()
         y_min, y_max = self.pca_2d[:, 1].min(), self.pca_2d[:, 1].max()
-        
-        # Grid-based distribution
+
         grid_to_idx = {}
         used = set()
-        
+
         for row in range(n_rows_grid):
             for col in range(n_cols):
                 cx_norm = (col + 0.5) / n_cols
                 cy_norm = (row + 0.5) / n_rows_grid
                 cx = x_min + cx_norm * (x_max - x_min)
                 cy = y_min + cy_norm * (y_max - y_min)
-                
+
                 best_idx = None
                 best_dist = float('inf')
                 for idx in range(len(self.images)):
@@ -573,12 +686,11 @@ class InteractiveLabelingDialog(QDialog):
                     if dist < best_dist:
                         best_dist = dist
                         best_idx = idx
-                
+
                 if best_idx is not None:
                     grid_to_idx[(row, col)] = best_idx
                     used.add(best_idx)
-        
-        # Add remaining
+
         for idx in range(len(self.images)):
             if idx not in used:
                 for row in range(n_rows_grid):
@@ -589,22 +701,21 @@ class InteractiveLabelingDialog(QDialog):
                             break
                     if idx in used:
                         break
-        
-        # Create buttons
+
         self.thumb_buttons = {}
         for (row, col), idx in grid_to_idx.items():
             img = self.images[idx]
             thumb = cv2.resize(img, (120, 120), interpolation=cv2.INTER_AREA)
-            thumb_rgb = thumb  # images already in RGB, no conversion needed
-            
+            thumb_rgb = thumb
+
             h, w, ch = thumb_rgb.shape
             bytes_per_line = ch * w
             qt_image = QImage(thumb_rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
             pixmap = QPixmap.fromImage(qt_image)
-            
+
             btn = QPushButton()
             btn.setFixedSize(130, 130)
-            btn.setIcon(pixmap)
+            btn.setIcon(QIcon(pixmap))
             btn.setIconSize(QSize(120, 120))
             btn.setProperty("image_idx", idx)
             btn.setProperty("image_name", self.image_names[idx])
@@ -623,60 +734,60 @@ class InteractiveLabelingDialog(QDialog):
                 }
             """)
             btn.clicked.connect(lambda checked, b=btn: self._on_thumbnail_clicked(b))
-            
+
             self.grid_layout.addWidget(btn, row, col)
             self.thumb_buttons[idx] = btn
-            
+
     def _on_thumbnail_clicked(self, btn):
         if btn is None:
             return
-            
+
         idx = btn.property("image_idx")
-        
+
         if btn.isChecked():
             if idx not in self.selected_indices:
                 self.selected_indices.append(idx)
         else:
             if idx in self.selected_indices:
                 self.selected_indices.remove(idx)
-        
+
         count = len(self.selected_indices)
         color = 'green' if count >= self.n_examples else 'red'
         self.instruction.setText(
             f"<b>Clique nas imagens para selecionar exemplos de '{self.class_name}'</b><br>"
             f"Selecionados: <span style='color: {color};'>{count}/{self.n_examples}</span><br>"
+            f"<i>PCA calculado sobre deep features da InceptionV3 (2048 dims)</i><br>"
             f"{'✓ Pronto para concluir!' if count >= self.n_examples else 'Continue selecionando...'}"
         )
-        
+
         self.done_btn.setEnabled(count >= self.n_examples)
-            
+
     def _auto_select(self):
-        """Auto-select examples using k-means on PCA space."""
         available = [i for i in range(len(self.images)) if i not in self.selected_indices]
         n_pick = min(self.n_examples - len(self.selected_indices), len(available))
-        
+
         if n_pick > 0:
             kmeans = KMeans(n_clusters=n_pick, random_state=42 + self.class_id, n_init=10)
             clusters = kmeans.fit_predict(self.pca_2d[available])
-            
+
             for c in range(n_pick):
                 cluster_indices = [available[i] for i, cl in enumerate(clusters) if cl == c]
                 if cluster_indices:
                     centroid = kmeans.cluster_centers_[c]
                     dists = np.linalg.norm(self.pca_2d[cluster_indices] - centroid, axis=1)
                     best = cluster_indices[np.argmin(dists)]
-                    
+
                     if best not in self.selected_indices:
                         self.selected_indices.append(best)
                         if best in self.thumb_buttons:
                             self.thumb_buttons[best].setChecked(True)
-        
+
         self._on_thumbnail_clicked(self.thumb_buttons.get(self.selected_indices[0]) 
                                    if self.selected_indices else None)
 
 
 # =============================================================================
-# FAST DATASET & DATALOADER 
+# FAST DATASET & DATALOADER
 # =============================================================================
 
 class FastImageDataset(Dataset):
@@ -703,38 +814,34 @@ class FastImageDataset(Dataset):
 
 
 # =============================================================================
-# FAST INCEPTIONV3 CLASSIFIER 
+# REVISED INCEPTIONV3 CLASSIFIER
 # =============================================================================
 
 class FastInceptionV3Classifier:
-    def __init__(self, n_classes, device=None, freeze_backbone=False):
+    """
+    Revised InceptionV3 classifier with:
+    - Proper train/val/test split BEFORE augmentation
+    - 2-phase training: 5 epochs frozen + 8 epochs fine-tune
+    - Early stopping with patience
+    - Only Mixed_7b + Mixed_7c unfrozen for fine-tuning
+    """
+    def __init__(self, n_classes, device=None):
         self.n_classes = n_classes
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.freeze_backbone = freeze_backbone
+        self.model = None
+        self.best_val_acc = 0.0
 
-        self.model = models.inception_v3(weights=models.Inception_V3_Weights.DEFAULT)
+        # Transforms (no resize - images already 299x299)
+        self.train_transform = transforms.Compose([
+            transforms.ToPILImage(),
+            transforms.RandomHorizontalFlip(0.5),
+            transforms.RandomRotation(15),
+            transforms.ColorJitter(brightness=0.1, contrast=0.1),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
 
-        if self.freeze_backbone:
-            print("  Freezing backbone (transfer learning)...")
-            for param in self.model.parameters():
-                param.requires_grad = False
-        else:
-            print("  Fine-tuning: last 3 blocks unfrozen...")
-            for param in self.model.parameters():
-                param.requires_grad = False
-            for param in self.model.Mixed_7c.parameters():
-                param.requires_grad = True
-            for param in self.model.Mixed_7b.parameters():
-                param.requires_grad = True
-            for param in self.model.Mixed_7a.parameters():
-                param.requires_grad = True
-
-        num_ftrs = self.model.fc.in_features
-        self.model.fc = nn.Linear(num_ftrs, n_classes)
-        self.model = self.model.to(self.device)
-
-        # SEM RESIZE - imagens já são 299×299 (crop feito antes)
-        self.transform = transforms.Compose([
+        self.val_transform = transforms.Compose([
             transforms.ToPILImage(),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
@@ -742,62 +849,79 @@ class FastInceptionV3Classifier:
 
         self.scaler = GradScaler() if torch.cuda.is_available() else None
 
-    def train(self, X_train, y_train, epochs=30, batch_size=64, val_split=0.2,
-              patience=5, num_workers=0, class_weights=None):
-        
-        print(f"\n Training InceptionV3...")
-        print(f" Device: {self.device}")
-        print(f" Samples: {len(X_train)} | Epochs: {epochs} | Batch: {batch_size}")
-        print(f" Backbone frozen: {self.freeze_backbone}")
-        print(f" Input size: 299×299 (pre-cropped)")
+    def _build_model(self, freeze_backbone=True):
+        """Build model with optional backbone freezing."""
+        self.model = models.inception_v3(weights=models.Inception_V3_Weights.DEFAULT)
 
-        n_val = int(len(X_train) * val_split)
-        indices = np.random.permutation(len(X_train))
-        train_idx, val_idx = indices[n_val:], indices[:n_val]
+        if freeze_backbone:
+            print("  Freezing backbone (transfer learning)...")
+            for param in self.model.parameters():
+                param.requires_grad = False
+        else:
+            print("  Fine-tuning: unfreezing Mixed_7b and Mixed_7c...")
+            # Start frozen
+            for param in self.model.parameters():
+                param.requires_grad = False
+            # Only unfreeze the LAST TWO blocks (not 7a)
+            for param in self.model.Mixed_7c.parameters():
+                param.requires_grad = True
+            for param in self.model.Mixed_7b.parameters():
+                param.requires_grad = True
+            # Keep 7a frozen - too early in network for few data
 
-        train_dataset = FastImageDataset(X_train[train_idx], y_train[train_idx], self.transform)
-        val_dataset = FastImageDataset(X_train[val_idx], y_train[val_idx], self.transform)
+        num_ftrs = self.model.fc.in_features
+        self.model.fc = nn.Linear(num_ftrs, self.n_classes)
+        self.model = self.model.to(self.device)
+
+    def train_phase(self, X_train, y_train, X_val, y_val, 
+                    epochs, lr, patience, freeze_backbone=True):
+        """Train a single phase with early stopping."""
+        self._build_model(freeze_backbone=freeze_backbone)
+
+        train_dataset = FastImageDataset(X_train, y_train, self.train_transform)
+        val_dataset = FastImageDataset(X_val, y_val, self.val_transform)
 
         pin_memory = self.device.type == 'cuda'
         train_loader = DataLoader(
-            train_dataset, batch_size=batch_size, shuffle=True,
-            num_workers=num_workers, pin_memory=pin_memory
+            train_dataset, batch_size=64, shuffle=True,
+            num_workers=0, pin_memory=pin_memory
         )
         val_loader = DataLoader(
-            val_dataset, batch_size=batch_size, shuffle=False,
-            num_workers=num_workers, pin_memory=pin_memory
+            val_dataset, batch_size=64, shuffle=False,
+            num_workers=0, pin_memory=pin_memory
         )
 
-        if class_weights is None:
-            counts = Counter(y_train[train_idx])
-            total = len(train_idx)
-            weights = torch.tensor([
-                total / (self.n_classes * counts.get(c, 1))
-                for c in range(self.n_classes)
-            ], dtype=torch.float32).to(self.device)
-            print(f" Class weights: {weights.cpu().numpy()}")
-        else:
-            weights = torch.tensor(class_weights, dtype=torch.float32).to(self.device)
+        # Class weights for imbalance
+        counts = Counter(y_train)
+        total = len(y_train)
+        weights = torch.tensor([
+            total / (self.n_classes * counts.get(c, 1))
+            for c in range(self.n_classes)
+        ], dtype=torch.float32).to(self.device)
+        print(f"  Class weights: {weights.cpu().numpy()}")
 
         criterion = nn.CrossEntropyLoss(weight=weights)
 
-        params = [{'params': self.model.fc.parameters(), 'lr': 0.001}]
-        if not self.freeze_backbone:
+        # Optimizer: different LR for backbone vs classifier
+        params = [{'params': self.model.fc.parameters(), 'lr': lr}]
+        if not freeze_backbone:
             params.append({
-                'params': list(self.model.Mixed_7a.parameters()) +
-                          list(self.model.Mixed_7b.parameters()) +
+                'params': list(self.model.Mixed_7b.parameters()) +
                           list(self.model.Mixed_7c.parameters()),
-                'lr': 0.0001
+                'lr': lr * 0.1  # 10x lower for fine-tuning layers
             })
 
         optimizer = torch.optim.Adam(params)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode='max', factor=0.5, patience=2
+            optimizer, mode='max', factor=0.5, patience=max(1, patience - 1)
         )
 
-        best_val_acc, epochs_no_improve = 0, 0
+        best_val_acc = 0.0
+        epochs_no_improve = 0
+        best_state = None
 
         for epoch in range(epochs):
+            # Training
             self.model.train()
             train_loss, train_correct, train_total = 0, 0, 0
 
@@ -829,6 +953,7 @@ class FastInceptionV3Classifier:
                 train_correct += (predicted == batch_labels).sum().item()
                 train_total += batch_labels.size(0)
 
+            # Validation
             self.model.eval()
             val_correct, val_total = 0, 0
             val_preds, val_true = [], []
@@ -853,36 +978,81 @@ class FastInceptionV3Classifier:
             val_dist = Counter(val_preds)
             true_dist = Counter(val_true)
 
-            print(f" Epoch {epoch+1}/{epochs} | "
+            print(f"  Epoch {epoch+1}/{epochs} | "
                   f"Loss: {train_loss/train_total:.4f} | "
                   f"Train: {train_acc:.3f} | Val: {val_acc:.3f}")
-            print(f"   Val PREDICTED: {dict(val_dist)}")
-            print(f"   Val TRUE:      {dict(true_dist)}")
+            print(f"    Val PREDICTED: {dict(val_dist)}")
+            print(f"    Val TRUE:      {dict(true_dist)}")
 
             scheduler.step(val_acc)
 
             if val_acc > best_val_acc:
                 best_val_acc = val_acc
                 epochs_no_improve = 0
-                torch.save(self.model.state_dict(), "best_model_fast.pth")
-                print(f"  -> New best! Saved.")
+                best_state = {k: v.cpu().clone() for k, v in self.model.state_dict().items()}
+                print(f"    -> New best val_acc: {val_acc:.3f}")
             else:
                 epochs_no_improve += 1
                 if epochs_no_improve >= patience:
-                    print(f"\n Early stopping at epoch {epoch+1}")
+                    print(f"    -> Early stopping at epoch {epoch+1}")
                     break
 
-        print(f"\n Best validation accuracy: {best_val_acc:.3f}")
-        self.model.load_state_dict(torch.load("best_model_fast.pth", weights_only=True))
+        # Restore best weights
+        if best_state is not None:
+            self.model.load_state_dict(best_state)
 
-    def predict(self, images, batch_size=64, num_workers=0):
+        print(f"  Best validation accuracy: {best_val_acc:.3f}")
+        return best_val_acc
+
+    def train_two_phase(self, X_train, y_train, X_val, y_val):
+        """
+        Two-phase training:
+        Phase 1: Transfer learning (frozen backbone, 5 epochs, lr=0.001)
+        Phase 2: Fine-tuning (unfreeze 7b+7c, 8 epochs, lr=0.0001)
+        """
+        print(f"\n{'='*60}")
+        print("PHASE 1: Transfer Learning (frozen backbone)")
+        print(f"{'='*60}")
+        print(f"  Training: {len(X_train)} samples")
+        print(f"  Validation: {len(X_val)} samples")
+
+        val_acc_1 = self.train_phase(
+            X_train, y_train, X_val, y_val,
+            epochs=5, lr=0.001, patience=2, freeze_backbone=True
+        )
+
+        # Save phase 1 weights
+        phase1_state = {k: v.cpu().clone() for k, v in self.model.state_dict().items()}
+
+        print(f"\n{'='*60}")
+        print("PHASE 2: Fine-tuning (Mixed_7b + Mixed_7c)")
+        print(f"{'='*60}")
+
+        # Rebuild with unfrozen layers, load phase 1 weights
+        self._build_model(freeze_backbone=False)
+        self.model.load_state_dict(phase1_state)
+
+        val_acc_2 = self.train_phase(
+            X_train, y_train, X_val, y_val,
+            epochs=8, lr=0.0001, patience=3, freeze_backbone=False
+        )
+
+        print(f"\n{'='*60}")
+        print(f"FINAL: Phase 1 val_acc={val_acc_1:.3f}, Phase 2 val_acc={val_acc_2:.3f}")
+        print(f"{'='*60}")
+
+        # Save best model
+        torch.save(self.model.state_dict(), "best_model_fast.pth")
+        print("  Model saved to best_model_fast.pth")
+
+    def predict(self, images, batch_size=64):
         self.model.eval()
         dummy_labels = np.zeros(len(images), dtype=np.int64)
-        dataset = FastImageDataset(images, dummy_labels, self.transform)
+        dataset = FastImageDataset(images, dummy_labels, self.val_transform)
         pin_memory = self.device.type == 'cuda'
         loader = DataLoader(
             dataset, batch_size=batch_size, shuffle=False,
-            num_workers=num_workers, pin_memory=pin_memory
+            num_workers=0, pin_memory=pin_memory
         )
 
         predictions, confidences = [], []
@@ -899,17 +1069,20 @@ class FastInceptionV3Classifier:
 
         return np.array(predictions), np.array(confidences)
 
-    def extract_features(self, images, batch_size=64, num_workers=0):
+    def extract_features(self, images, batch_size=64):
+        """Extract 2048-dim features from avg_pool layer."""
         self.model.eval()
+
+        # Temporarily replace fc with Identity
         original_fc = self.model.fc
         self.model.fc = nn.Identity()
 
         dummy_labels = np.zeros(len(images), dtype=np.int64)
-        dataset = FastImageDataset(images, dummy_labels, self.transform)
+        dataset = FastImageDataset(images, dummy_labels, self.val_transform)
         pin_memory = self.device.type == 'cuda'
         loader = DataLoader(
             dataset, batch_size=batch_size, shuffle=False,
-            num_workers=num_workers, pin_memory=pin_memory
+            num_workers=0, pin_memory=pin_memory
         )
 
         features = []
@@ -926,7 +1099,7 @@ class FastInceptionV3Classifier:
 
 
 # =============================================================================
-# HIERARCHICAL CLASSIFIER 
+# HIERARCHICAL CLASSIFIER (Entropy + CNN ensemble)
 # =============================================================================
 
 class HierarchicalClassifier:
@@ -945,7 +1118,7 @@ class HierarchicalClassifier:
     def predict(self, images, cnn_probs=None):
         entropies = self.entropy_clf.compute_entropies(images)
         entropy_probs = np.zeros((len(images), 3))
-        
+
         for i, e in enumerate(entropies):
             if e < self.thresholds[0] - self.margin:
                 entropy_probs[i, 0] = 1.0
@@ -961,31 +1134,37 @@ class HierarchicalClassifier:
                 entropy_probs[i, 2] = 1 - w
             else:
                 entropy_probs[i, 2] = 1.0
-        
+
         if cnn_probs is None:
             return np.argmax(entropy_probs, axis=1), entropy_probs
-        
-        # Peso adaptativo: longe da fronteira = confia mais na entropia
+
         weights = np.zeros(len(images))
         for i, e in enumerate(entropies):
             dist_to_boundary = min(abs(e - self.thresholds[0]), abs(e - self.thresholds[1]))
             weights[i] = min(dist_to_boundary / self.margin, 1.0)
-        
+
         final_probs = np.zeros_like(cnn_probs)
         for i in range(len(images)):
             w = weights[i]
             final_probs[i] = w * entropy_probs[i] + (1 - w) * cnn_probs[i]
-        
+
         return np.argmax(final_probs, axis=1), final_probs
 
 
 # =============================================================================
-# MAIN SEAFLOOR CLASSIFICATION CLASS 
+# MAIN SEAFLOOR CLASSIFICATION CLASS (REVISED)
 # =============================================================================
 
 class SeafloorClassifier:
     """
-    Classificador de fundo marinho com classes dinâmicas.
+    Classificador de fundo marinho com classes dinâmicas - VERSÃO REVISADA.
+
+    CORREÇÕES CRÍTICAS:
+    1. PCA para seleção usa DEEP FEATURES (InceptionV3, 2048 dims)
+    2. k-NN para expansão de labels usa DEEP FEATURES
+    3. Split treino/val/teste ANTES de qualquer augmentation
+    4. Treinamento em 2 fases: 5 épocas (frozen) + 8 épocas (fine-tune)
+    5. Fine-tuning só descongela Mixed_7b + Mixed_7c
 
     Classes fixas (atalhos de teclado):
         S → Sedimento
@@ -996,7 +1175,6 @@ class SeafloorClassifier:
         1, 2, 3... 9, 0 → adicionadas pelo usuário via menu
     """
 
-    # Classes fixas e seus atalhos
     FIXED_CLASSES = {
         "S": "Sedimento",
         "F": "Coral_Fragmento", 
@@ -1009,7 +1187,6 @@ class SeafloorClassifier:
         "Coral_Vivo": "#00CED1"
     }
 
-    # Atalhos disponíveis para classes customizadas
     CUSTOM_SHORTCUTS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]
 
     def __init__(self, n_clusters=3, max_examples=None,
@@ -1020,21 +1197,16 @@ class SeafloorClassifier:
                  crop_ratio=0.85,
                  use_hierarchical=False,
                  entropy_margin=0.3,
-                 custom_classes=None,        # NOVO: lista de nomes
-                 custom_colors=None):          # NOVO: dict nome→cor
-        """
-        Args:
-            custom_classes: lista de nomes de classes adicionais (ex: ["Areia", "Rocha"])
-            custom_colors: dict com cores para classes customizadas (ex: {"Areia": "#FFD700"})
-        """
+                 custom_classes=None,
+                 custom_colors=None):
 
         # Inicializar classes fixas
         self.fixed_class_names = list(self.FIXED_CLASSES.values())
         self.fixed_colors = dict(self.FIXED_COLORS)
 
         # Inicializar classes customizadas
-        self.custom_classes = {}  # {atalho: nome}  ex: {"1": "Areia", "2": "Rocha"}
-        self.custom_colors = {}   # {nome: cor}     ex: {"Areia": "#FFD700"}
+        self.custom_classes = {}
+        self.custom_colors = {}
 
         if custom_classes:
             for i, name in enumerate(custom_classes):
@@ -1046,14 +1218,10 @@ class SeafloorClassifier:
                     else:
                         self.custom_colors[name] = self._generate_color(name)
 
-        # Lista completa de classes para o classificador
         self.class_names = self.fixed_class_names + list(self.custom_classes.values())
         self.class_colors = {**self.fixed_colors, **self.custom_colors}
-
-        # Atualizar n_clusters
         self.n_clusters = len(self.class_names)
 
-        # ... resto do __init__ existente (max_examples, normalize_colors, etc.) ...
         self.max_examples = max_examples
         self.normalize_colors = normalize_colors
         self.n_examples_per_class = n_examples_per_class
@@ -1070,10 +1238,15 @@ class SeafloorClassifier:
         if self.normalize_colors:
             self.normalizer = ColorNormalizer(reference_path=reference_path)
 
+        # Initialize deep feature extractor (CRITICAL: shared across pipeline)
+        self.deep_feature_extractor = DeepFeatureExtractor()
+
+        # Labeler now uses deep features
         self.labeler = SemiAutoLabeler(n_examples_per_class=n_examples_per_class)
+        self.labeler.set_deep_feature_extractor(self.deep_feature_extractor)
+
         self.trained_classifier = None
 
-        # Atualizar entropy classifier com classes dinâmicas
         self.entropy_classifier = EntropyClassifier(
             thresholds=(6.471, 6.980),
             class_names=self.class_names
@@ -1082,171 +1255,98 @@ class SeafloorClassifier:
 
         # Criar diretórios
         self.output_dir.mkdir(exist_ok=True)
-        for sub in ["clusters", "normalized", "supervised", "pca_plots", "cropped"]:
+        for sub in ["clusters", "normalized", "supervised", "pca_plots", "cropped", 
+                    "train", "val", "test"]:
             (self.output_dir / sub).mkdir(exist_ok=True)
         self._refresh_cluster_dirs()
 
-    # -------------------------------------------------------------------------
-    # MÉTODOS NOVOS PARA GERENCIAMENTO DE CLASSES
-    # -------------------------------------------------------------------------
-
     def _generate_color(self, name):
-        """Gera cor automática baseada no hash do nome."""
         hue = hash(name) % 360 / 360.0
         rgb = colorsys.hsv_to_rgb(hue, 0.8, 0.9)
         return '#{:02x}{:02x}{:02x}'.format(int(rgb[0]*255), int(rgb[1]*255), int(rgb[2]*255))
 
     def _refresh_cluster_dirs(self):
-        """Atualiza diretórios de clusters para número atual de classes."""
         for i in range(self.n_clusters):
             (self.output_dir / "clusters" / f"cluster{i}").mkdir(exist_ok=True)
             (self.output_dir / "supervised" / f"class{i}").mkdir(exist_ok=True)
 
     def get_class_by_shortcut(self, shortcut):
-        """
-        Retorna o nome da classe para um atalho de teclado.
-
-        Args:
-            shortcut: str - "S", "F", "R", "1", "2", ... "9", "0"
-
-        Returns:
-            str: nome da classe ou None se atalho inválido
-        """
         shortcut = shortcut.upper() if shortcut in ["s", "f", "r"] else shortcut
-
         if shortcut in self.FIXED_CLASSES:
             return self.FIXED_CLASSES[shortcut]
-
         if shortcut in self.custom_classes:
             return self.custom_classes[shortcut]
-
         return None
 
     def get_shortcut_for_class(self, class_name):
-        """Retorna o atalho para uma classe (ex: "Sedimento" → "S")."""
-        # Verificar fixas
         for shortcut, name in self.FIXED_CLASSES.items():
             if name == class_name:
                 return shortcut
-        # Verificar customizadas
         for shortcut, name in self.custom_classes.items():
             if name == class_name:
                 return shortcut
         return None
 
     def add_custom_class(self, name, color=None):
-        """
-        Adiciona nova classe customizada.
-
-        Args:
-            name: nome da nova classe
-            color: cor opcional (hex), senão gera automática
-
-        Returns:
-            tuple: (sucesso: bool, atalho: str ou None, mensagem: str)
-        """
-        # Verificar se nome já existe
         if name in self.class_names:
             return False, None, f"Classe '{name}' já existe!"
-
-        # Verificar se há atalho disponível
         available = [s for s in self.CUSTOM_SHORTCUTS if s not in self.custom_classes]
         if not available:
             return False, None, "Limite de 10 classes customizadas atingido!"
-
         shortcut = available[0]
-
-        # Adicionar
         self.custom_classes[shortcut] = name
         self.custom_colors[name] = color if color else self._generate_color(name)
-
-        # Atualizar listas consolidadas
         self.class_names = self.fixed_class_names + list(self.custom_classes.values())
         self.class_colors[name] = self.custom_colors[name]
         self.n_clusters = len(self.class_names)
-
-        # Atualizar entropy classifier
         self.entropy_classifier.class_names = self.class_names
-
-        # Criar diretórios
         self._refresh_cluster_dirs()
-
         return True, shortcut, f"Classe '{name}' adicionada com atalho '{shortcut}'"
 
     def remove_custom_class(self, name_or_shortcut):
-        """
-        Remove uma classe customizada.
-
-        Args:
-            name_or_shortcut: nome da classe ou atalho (ex: "Areia" ou "1")
-
-        Returns:
-            tuple: (sucesso: bool, mensagem: str)
-        """
-        # Resolver nome se recebeu atalho
         name = name_or_shortcut
         if name_or_shortcut in self.custom_classes:
             name = self.custom_classes[name_or_shortcut]
-
         if name not in self.custom_classes.values():
-            return False, f"Classe '{name}' não encontrada ou é fixa (não pode ser removida)"
-
-        # Remover
+            return False, f"Classe '{name}' não encontrada ou é fixa"
         shortcut_to_remove = None
         for s, n in self.custom_classes.items():
             if n == name:
                 shortcut_to_remove = s
                 break
-
         if shortcut_to_remove:
             del self.custom_classes[shortcut_to_remove]
-
         self.custom_colors.pop(name, None)
-
-        # Atualizar listas consolidadas
         self.class_names = self.fixed_class_names + list(self.custom_classes.values())
         self.n_clusters = len(self.class_names)
-
-        # Atualizar entropy classifier
         self.entropy_classifier.class_names = self.class_names
-
-        # Reorganizar atalhos (compactar)
         self._reorganize_shortcuts()
-
         return True, f"Classe '{name}' removida"
 
     def _reorganize_shortcuts(self):
-        """Reorganiza atalhos para ficarem sequenciais (1,2,3...)."""
         classes = list(self.custom_classes.values())
         self.custom_classes = {}
         for i, name in enumerate(classes):
             if i < len(self.CUSTOM_SHORTCUTS):
                 self.custom_classes[self.CUSTOM_SHORTCUTS[i]] = name
-
         self.class_names = self.fixed_class_names + list(self.custom_classes.values())
         self.n_clusters = len(self.class_names)
 
     def list_all_classes(self):
-        """Retorna lista de todas as classes com seus atalhos."""
         result = []
         for shortcut, name in self.FIXED_CLASSES.items():
             result.append({
-                "shortcut": shortcut,
-                "name": name,
-                "color": self.fixed_colors[name],
-                "type": "fixed"
+                "shortcut": shortcut, "name": name,
+                "color": self.fixed_colors[name], "type": "fixed"
             })
         for shortcut, name in self.custom_classes.items():
             result.append({
-                "shortcut": shortcut,
-                "name": name,
-                "color": self.custom_colors.get(name, "#808080"),
-                "type": "custom"
+                "shortcut": shortcut, "name": name,
+                "color": self.custom_colors.get(name, "#808080"), "type": "custom"
             })
         return result
 
     def save_config(self, path=None):
-        """Salva configuração atual (classes e cores)."""
         config = {
             "fixed_classes": self.FIXED_CLASSES,
             "fixed_colors": self.fixed_colors,
@@ -1266,29 +1366,18 @@ class SeafloorClassifier:
         return path
 
     def load_config(self, path):
-        """Carrega configuração salva."""
         with open(path, 'r', encoding='utf-8') as f:
             config = json.load(f)
-
         self.custom_classes = config.get("custom_classes", {})
         self.custom_colors = config.get("custom_colors", {})
         self.class_names = config.get("class_names", self.fixed_class_names)
         self.class_colors = {**self.fixed_colors, **self.custom_colors}
         self.n_clusters = config.get("n_clusters", len(self.class_names))
-
-        # Atualizar entropy classifier
         self.entropy_classifier.class_names = self.class_names
-
         self._refresh_cluster_dirs()
         return config
 
-
-    # -------------------------------------------------------------------------
-    # MÉTODOS NOVOS: Carregar imagens de pasta
-    # -------------------------------------------------------------------------
-
     def load_images_from_folder(self, folder_path):
-        """Carrega imagens de uma pasta para classificação."""
         folder = Path(folder_path)
         image_paths = []
         for ext in ["*.jpg", "*.jpeg", "*.png", "*.bmp", "*.tif", "*.tiff"]:
@@ -1317,18 +1406,11 @@ class SeafloorClassifier:
         print(f"  Carregadas {len(images_raw)} imagens de {folder_path}")
         return images_raw, images_rgb, image_names
 
-    # -------------------------------------------------------------------------
-    # MÉTODOS NOVOS: Persistência do modelo treinado
-    # -------------------------------------------------------------------------
-
     def save_model(self, path=None):
-        """Salva o modelo treinado + configuração para uso posterior."""
         if self.trained_classifier is None:
             raise ValueError("Nenhum modelo treinado para salvar!")
-
         path = Path(path) if path else (self.output_dir / "seafloor_model.pt")
         path.parent.mkdir(parents=True, exist_ok=True)
-
         checkpoint = {
             "model_state_dict": self.trained_classifier.model.state_dict(),
             "n_classes": self.trained_classifier.n_classes,
@@ -1348,20 +1430,15 @@ class SeafloorClassifier:
             "ref_std": self.normalizer.ref_std.tolist() if (self.normalizer and self.normalizer.ref_std is not None) else None,
             "reference_path": str(self.normalizer.reference_path) if self.normalizer else None,
         }
-
         torch.save(checkpoint, str(path))
         print(f"  Modelo salvo em: {path}")
         return str(path)
 
     def load_model(self, path):
-        """Carrega um modelo treinado previamente salvo."""
         path = Path(path)
         if not path.exists():
             raise FileNotFoundError(f"Modelo não encontrado: {path}")
-
         checkpoint = torch.load(str(path), map_location="cpu", weights_only=True)
-
-        # Restaurar configuração
         self.class_names = checkpoint.get("class_names", self.class_names)
         self.class_colors = checkpoint.get("class_colors", self.class_colors)
         self.custom_classes = checkpoint.get("custom_classes", {})
@@ -1374,49 +1451,423 @@ class SeafloorClassifier:
         self.normalize_colors = checkpoint.get("normalize_colors", self.normalize_colors)
         self.use_hierarchical = checkpoint.get("use_hierarchical", self.use_hierarchical)
         self.entropy_margin = checkpoint.get("entropy_margin", self.entropy_margin)
-
-        # Restaurar normalizador
         ref_mean = checkpoint.get("ref_mean")
         ref_std = checkpoint.get("ref_std")
         ref_path = checkpoint.get("reference_path")
-
         if ref_mean is not None and ref_std is not None:
             if self.normalizer is None:
                 self.normalizer = ColorNormalizer(reference_path=ref_path)
             self.normalizer.ref_mean = np.array(ref_mean, dtype=np.float32)
             self.normalizer.ref_std = np.array(ref_std, dtype=np.float32)
-
-        # Recriar classificador
         n_classes = checkpoint.get("n_classes", len(self.class_names))
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        self.trained_classifier = FastInceptionV3Classifier(
-            n_classes=n_classes,
-            device=device,
-            freeze_backbone=False
-        )
+        self.trained_classifier = FastInceptionV3Classifier(n_classes=n_classes, device=device)
+        self.trained_classifier._build_model(freeze_backbone=False)
         self.trained_classifier.model.load_state_dict(checkpoint["model_state_dict"])
         self.trained_classifier.model.eval()
-
         self.entropy_classifier.class_names = self.class_names
-
         print(f"  Modelo carregado de: {path}")
         print(f"  Classes: {self.class_names}")
         return True
 
     def has_trained_model(self):
-        """Verifica se existe um modelo treinado carregado."""
         return self.trained_classifier is not None
 
-    # -------------------------------------------------------------------------
-    # MÉTODO NOVO: Treinar a partir de dados coletados
-    # -------------------------------------------------------------------------
+    def predict_single_frame(self, frame_bgr):
+        if self.trained_classifier is None:
+            raise ValueError("Classifier not trained yet!")
+        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        if self.crop_to_299 and self.cropper is not None:
+            cropped, _ = self.cropper.crop(frame_bgr)
+            frame_bgr = cropped
+            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        if self.normalize_colors and self.normalizer and self.normalizer.ref_mean is not None:
+            frame_norm_bgr = self.normalizer.normalize(frame_bgr)
+            frame_rgb = cv2.cvtColor(frame_norm_bgr, cv2.COLOR_BGR2RGB)
+        preds, confs = self.trained_classifier.predict([frame_rgb], batch_size=1)
+        class_id = int(preds[0])
+        confidence = float(confs[0])
+        if class_id >= len(self.class_names):
+            class_id = len(self.class_names) - 1
+        class_name = self.class_names[class_id]
+        return {
+            "class_id": class_id,
+            "class_name": class_name,
+            "confidence": confidence,
+            "color": self.class_colors.get(class_name, "#FFFFFF"),
+            "shortcut": self.get_shortcut_for_class(class_name)
+        }
+
+
+    # =====================================================================
+    # MAIN CLASSIFICATION PIPELINE (REVISED)
+    # =====================================================================
+
+    def classify_images(self, images_rgb, images_raw, image_names, folder_path=None,
+                         parent_widget=None):
+        """
+        Run full classification workflow WITH CRITICAL FIXES:
+        1. PCA uses DEEP FEATURES (InceptionV3, 2048-dim)
+        2. k-NN expansion uses DEEP FEATURES
+        3. Train/Val/Test split BEFORE augmentation
+        4. 2-phase training: 5 epochs (frozen) + 8 epochs (fine-tune)
+        """
+
+        # ===== Step 1: Extract DEEP FEATURES for PCA (CRITICAL FIX) =====
+        print("\n" + "="*60)
+        print("STEP 1: Extracting DEEP FEATURES for PCA visualization")
+        print("="*60)
+        print("  Using InceptionV3 avg_pool (2048 dimensions)")
+        print("  This ensures user selection reflects what the CNN sees.")
+
+        deep_features = self.deep_feature_extractor.extract(images_rgb)
+        print(f"  Deep features shape: {deep_features.shape}")
+
+        # Scale and reduce for PCA visualization
+        scaler = StandardScaler()
+        deep_scaled = scaler.fit_transform(deep_features)
+        pca_2d = PCA(n_components=2).fit_transform(deep_scaled)
+        pca_obj = PCA(n_components=2).fit(deep_scaled)
+        print(f"  PCA explained variance: {pca_obj.explained_variance_ratio_}")
+
+        # ===== Step 2: INTERACTIVE labeling via Qt Dialog =====
+        print("\n" + "="*60)
+        print("STEP 2: Interactive labeling (PCA from DEEP FEATURES)")
+        print("="*60)
+
+        self.labeler.interactive_labeling_qt(
+            images_rgb, image_names, pca_2d,
+            self.n_clusters, self.class_names,
+            parent_widget=parent_widget
+        )
+
+        # ===== Step 3: EXPAND labels with k-NN in DEEP FEATURE space =====
+        print("\n" + "="*60)
+        print("STEP 3: Expanding labels with k-NN (DEEP FEATURES)")
+        print("="*60)
+        self.labeler.expand_labels_nearest_neighbors(images_rgb, n_neighbors=50)
+
+        n_labeled = len(self.labeler.labels)
+        print(f"  Total labeled after expansion: {n_labeled}/{len(images_rgb)}")
+
+        # ===== Step 4: CROP to 299×299 =====
+        print("\n" + "="*60)
+        print("STEP 4: Cropping to 299×299")
+        print("="*60)
+
+        if self.crop_to_299 and self.cropper is not None:
+            cropped_raw, crop_infos = self.cropper.crop_batch(images_raw, image_names)
+            cropped_rgb = [cv2.cvtColor(img, cv2.COLOR_BGR2RGB) for img in cropped_raw]
+
+            methods = Counter([info['method'] for info in crop_infos])
+            print(f"  Methods: {dict(methods)}")
+
+            for img, name in zip(cropped_raw, image_names):
+                out_path = self.output_dir / "cropped" / f"crop_{name}"
+                cv2.imwrite(str(out_path), img)
+
+            images_cropped_raw = cropped_raw
+            images_cropped_rgb = cropped_rgb
+        else:
+            images_cropped_raw = images_raw
+            images_cropped_rgb = images_rgb
+
+        # ===== Step 5: Color normalization =====
+        print("\n" + "="*60)
+        print("STEP 5: Color normalization")
+        print("="*60)
+
+        if self.normalize_colors and self.normalizer and folder_path:
+            ref_img = self.normalizer.select_reference(image_names, folder_path)
+            self.normalizer.compute_reference_stats(ref_img)
+            normalized_bgr = self.normalizer.normalize_dataset(
+                images_cropped_raw, image_names,
+                output_dir=str(self.output_dir / "normalized")
+            )
+            images_normalized_rgb = [cv2.cvtColor(img, cv2.COLOR_BGR2RGB) 
+                                      for img in normalized_bgr]
+        else:
+            images_normalized_rgb = images_cropped_rgb
+
+        # ===== Step 6: Get labeled data (NO augmentation yet!) =====
+        print("\n" + "="*60)
+        print("STEP 6: Preparing labeled data (NO augmentation yet)")
+        print("="*60)
+
+        X_labeled, y_labeled, names_labeled = self.labeler.get_training_data(
+            images_normalized_rgb, image_names
+        )
+
+        print(f"  Labeled samples: {len(X_labeled)}")
+        print(f"  Class distribution: {dict(Counter(y_labeled))}")
+
+        # ===== Step 7: STRATIFIED SPLIT (CRITICAL FIX - before augmentation!) =====
+        print("\n" + "="*60)
+        print("STEP 7: Stratified Train/Val/Test split (BEFORE augmentation)")
+        print("="*60)
+        print("  CRITICAL: Split happens BEFORE any augmentation to prevent data leakage!")
+
+        # First split: separate test set (15%)
+        X_temp, X_test, y_temp, y_test = train_test_split(
+            X_labeled, y_labeled, 
+            test_size=0.15, 
+            stratify=y_labeled, 
+            random_state=42
+        )
+
+        # Second split: separate validation from temp (17.6% of temp ≈ 15% of total)
+        X_train, X_val, y_train, y_val = train_test_split(
+            X_temp, y_temp,
+            test_size=0.176,
+            stratify=y_temp,
+            random_state=42
+        )
+
+        print(f"  Train: {len(X_train)} samples")
+        print(f"  Val:   {len(X_val)} samples")
+        print(f"  Test:  {len(X_test)} samples")
+        print(f"  Train distribution: {dict(Counter(y_train))}")
+        print(f"  Val distribution:   {dict(Counter(y_val))}")
+        print(f"  Test distribution:   {dict(Counter(y_test))}")
+
+        # ===== Step 8: Balance training set with augmentation (ONLY train!) =====
+        print("\n" + "="*60)
+        print("STEP 8: Balancing training set with augmentation (TRAIN ONLY)")
+        print("="*60)
+
+        if self.use_augmentation:
+            X_train_bal, y_train_bal = balance_classes_by_augmentation(
+                X_train, y_train, augment_factor=3, max_oversample_ratio=2.0
+            )
+        else:
+            X_train_bal, y_train_bal = X_train, y_train
+
+        print(f"  After balancing: {len(X_train_bal)} samples")
+        print(f"  Balanced distribution: {dict(Counter(y_train_bal))}")
+
+        # ===== Step 9: Train classifier with 2-phase approach =====
+        print("\n" + "="*60)
+        print("STEP 9: Training classifier (2-phase)")
+        print("="*60)
+
+        n_classes = len(np.unique(y_train_bal))
+
+        classifier = FastInceptionV3Classifier(n_classes=n_classes)
+        classifier.train_two_phase(X_train_bal, y_train_bal, X_val, y_val)
+
+        self.trained_classifier = classifier
+
+        # ===== Step 10: Evaluate on TEST set (never seen before!) =====
+        print("\n" + "="*60)
+        print("STEP 10: Evaluating on TEST set (unseen data)")
+        print("="*60)
+
+        test_preds, test_confs = classifier.predict(X_test, batch_size=64)
+        test_acc = np.mean(test_preds == y_test)
+        print(f"  Test accuracy: {test_acc:.3f}")
+        print(f"  Test confusion (pred vs true):")
+        print(f"    Predicted: {dict(Counter(test_preds))}")
+        print(f"    True:      {dict(Counter(y_test))}")
+
+        # ===== Step 11: Predict on ALL images =====
+        print("\n" + "="*60)
+        print("STEP 11: Predicting on all images")
+        print("="*60)
+
+        supervised_preds, confidences = classifier.predict(
+            images_normalized_rgb, batch_size=64
+        )
+
+        # ===== Step 12: Unsupervised clustering (for comparison) =====
+        print("\n" + "="*60)
+        print("STEP 12: Unsupervised clustering")
+        print("="*60)
+
+        unsupervised_preds = self._run_unsupervised(images_normalized_rgb)
+
+        # ===== Step 13: Comparison =====
+        print("\n" + "="*60)
+        print("STEP 13: Comparing methods")
+        print("="*60)
+
+        self._compare_methods(supervised_preds, unsupervised_preds, confidences)
+
+        # ===== Step 14: Save ORIGINAL images to result folders =====
+        print("\n" + "="*60)
+        print("STEP 14: Saving results")
+        print("="*60)
+
+        for i, name in enumerate(image_names):
+            dst = self.output_dir / "supervised" / f"class{supervised_preds[i]}" / name
+            cv2.imwrite(str(dst), images_raw[i])
+
+        for i, name in enumerate(image_names):
+            dst = self.output_dir / "clusters" / f"cluster{unsupervised_preds[i]}" / name
+            cv2.imwrite(str(dst), images_raw[i])
+
+        # ===== Step 15: Visualizations =====
+        print("\n" + "="*60)
+        print("STEP 15: Generating visualizations")
+        print("="*60)
+
+        self._visualize_pca_supervised(images_normalized_rgb, supervised_preds, confidences)
+        self._visualize_pca_unsupervised(images_normalized_rgb, unsupervised_preds)
+
+        return supervised_preds, unsupervised_preds, confidences
+
+    def _run_unsupervised(self, images_normalized_rgb):
+        """Unsupervised clustering com InceptionV3 deep features."""
+        print("  Extracting deep features for clustering...")
+        cnn_features = self.deep_feature_extractor.extract(images_normalized_rgb)
+
+        scaler = StandardScaler()
+        cnn_scaled = scaler.fit_transform(cnn_features)
+
+        n_components = min(512, cnn_scaled.shape[0], cnn_scaled.shape[1])
+        images_new = PCA(n_components=n_components).fit_transform(cnn_scaled)
+
+        predictions = KMeans(n_clusters=self.n_clusters, random_state=728, n_init=10).fit_predict(images_new)
+        return predictions
+
+    def _compare_methods(self, supervised, unsupervised, confidences):
+        if len(set(supervised)) == len(set(unsupervised)):
+            cm = confusion_matrix(supervised, unsupervised)
+            row_ind, col_ind = linear_sum_assignment(-cm)
+            mapped = np.zeros_like(unsupervised)
+            for r, c in zip(row_ind, col_ind):
+                mapped[unsupervised == c] = r
+            kappa = cohen_kappa_score(supervised, mapped)
+            print(f"\nCohen's Kappa: {kappa:.3f}")
+
+        print(f"Confidence > 0.6: {np.mean(confidences > 0.6):.1%}")
+        print("\nSupervised distribution:", Counter(supervised))
+        print("Unsupervised distribution:", Counter(unsupervised))
+
+    def _visualize_pca_supervised(self, images, predictions, confidences):
+        """Visualização PCA supervisionada com deep features."""
+        if self.trained_classifier is None:
+            return
+
+        print("  Extracting deep features for PCA visualization...")
+        trained_features = self.trained_classifier.extract_features(images, batch_size=64)
+        scaled = StandardScaler().fit_transform(trained_features)
+        pca = PCA(n_components=2)
+        pca_2d = pca.fit_transform(scaled)
+        var = pca.explained_variance_ratio_
+
+        colors_list = ['#2ecc71', '#9b59b6', '#e74c3c', '#3498db', '#f1c40f', '#1abc9c']
+
+        fig, ax = plt.subplots(figsize=(16, 12))
+
+        for idx in range(len(images)):
+            img = images[idx].astype(np.uint8)
+            thumb = cv2.resize(img, (50, 50))
+            imagebox = OffsetImage(thumb, zoom=0.8)
+            ab = AnnotationBbox(imagebox, (pca_2d[idx, 0], pca_2d[idx, 1]),
+                            frameon=True, pad=0.05, boxcoords="data", zorder=1,
+                            bboxprops=dict(
+                                edgecolor=colors_list[predictions[idx] % len(colors_list)],
+                                linewidth=2.5, facecolor='white', alpha=0.9
+                            ))
+            ax.add_artist(ab)
+
+        for i in range(self.n_clusters):
+            mask = predictions == i
+            n_points = np.sum(mask)
+            if n_points > 0:
+                cls_name = self.class_names[i] if i < len(self.class_names) else f"Class_{i}"
+                ax.scatter(pca_2d[mask, 0], pca_2d[mask, 1],
+                        c=colors_list[i % len(colors_list)],
+                        s=80, alpha=0.6, edgecolors='black', linewidth=0.8,
+                        zorder=10, label=f'{cls_name} ({n_points})')
+
+        info_text = ""
+        for i in range(self.n_clusters):
+            mask = predictions == i
+            if np.sum(mask) > 0:
+                cls_name = self.class_names[i] if i < len(self.class_names) else f"Class_{i}"
+                avg_conf = np.mean(confidences[mask])
+                info_text += f"{cls_name}: avg conf={avg_conf:.2f}\n"
+
+        ax.text(0.02, 0.98, info_text, transform=ax.transAxes, fontsize=10,
+                verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+
+        ax.set_xlabel('PCA 1', fontsize=12)
+        ax.set_ylabel('PCA 2', fontsize=12)
+        title = 'Supervised Classification - PCA (TRAINED deep features)'
+        if self.normalize_colors:
+            title += ' (Color Normalized)'
+        ax.set_title(title, fontsize=14, fontweight='bold')
+        ax.legend(loc='upper right', framealpha=0.9)
+        ax.grid(True, alpha=0.2)
+
+        plt.tight_layout()
+        out = self.output_dir / "pca_plots" / "pca_supervised_trained.png"
+        plt.savefig(out, dpi=200, bbox_inches='tight')
+        plt.close()
+        print(f"  Saved: {out}")
+
+    def _visualize_pca_unsupervised(self, images, predictions):
+        """Visualização PCA não-supervisionada com deep features."""
+        print("  Extracting deep features for unsupervised PCA...")
+        cnn_features = self.deep_feature_extractor.extract(images)
+
+        scaler = StandardScaler()
+        cnn_scaled = scaler.fit_transform(cnn_features)
+        pca = PCA(n_components=2)
+        pca_2d = pca.fit_transform(cnn_scaled)
+        var = pca.explained_variance_ratio_
+
+        colors_list = ['#2ecc71', '#9b59b6', '#e74c3c', '#3498db', '#f1c40f', '#1abc9c']
+
+        fig, ax = plt.subplots(figsize=(14, 10))
+
+        for idx in range(len(images)):
+            img = images[idx].astype(np.uint8)
+            thumb = cv2.resize(img, (50, 50))
+            imagebox = OffsetImage(thumb, zoom=0.8)
+            ab = AnnotationBbox(imagebox, (pca_2d[idx, 0], pca_2d[idx, 1]),
+                            frameon=True, pad=0.05, boxcoords="data", zorder=1,
+                            bboxprops=dict(
+                                edgecolor=colors_list[predictions[idx] % len(colors_list)],
+                                linewidth=2, facecolor='white', alpha=0.9
+                            ))
+            ax.add_artist(ab)
+
+        for i in range(self.n_clusters):
+            mask = predictions == i
+            n_points = np.sum(mask)
+            if n_points > 0:
+                ax.scatter(pca_2d[mask, 0], pca_2d[mask, 1],
+                        c=colors_list[i % len(colors_list)],
+                        s=60, alpha=0.9, edgecolors='black', linewidth=0.8,
+                        zorder=10, label=f'Cluster {i+1} ({n_points})')
+
+        ax.set_xlabel('PCA 1', fontsize=12)
+        ax.set_ylabel('PCA 2', fontsize=12)
+        title = 'Unsupervised Classification - PCA (Deep Features)'
+        if self.normalize_colors:
+            title += ' (Color Normalized)'
+        ax.set_title(title, fontsize=14, fontweight='bold')
+        ax.legend(loc='upper right', framealpha=0.9)
+        ax.grid(True, alpha=0.2)
+
+        plt.tight_layout()
+        out = self.output_dir / "pca_plots" / "pca_unsupervised.png"
+        plt.savefig(out, dpi=200, bbox_inches='tight')
+        plt.close()
+        print(f"  Saved: {out}")
+
+
+    # =====================================================================
+    # TRAIN FROM COLLECTED DATA (REVISED)
+    # =====================================================================
 
     def train_from_collected_data(self, data_dir, min_samples_per_class=5,
-                                   parent_widget=None, epochs_phase1=8,
-                                   epochs_phase2=15):
+                                   parent_widget=None):
         """
         Treina o classificador a partir de frames coletados durante anotação.
+        REVISADO: Usa split estratificado ANTES de augmentation.
         """
         data_dir = Path(data_dir)
         if not data_dir.exists():
@@ -1434,8 +1885,6 @@ class SeafloorClassifier:
 
         # Atualizar classes do classificador
         class_names_from_dirs = sorted([d.name for d in class_dirs])
-
-        # Separar fixas de customizadas
         new_custom = [n for n in class_names_from_dirs if n not in self.fixed_class_names]
 
         # Resetar classes customizadas
@@ -1488,7 +1937,7 @@ class SeafloorClassifier:
 
         labels = np.array(labels)
 
-        # Executar workflow completo
+        # Executar workflow completo REVISADO
         supervised_preds, unsupervised_preds, confidences = self.classify_images(
             images_rgb=np.array(images_rgb),
             images_raw=np.array(images_raw),
@@ -1508,361 +1957,6 @@ class SeafloorClassifier:
             "n_samples": len(images_raw),
         }
 
-    # -------------------------------------------------------------------------
-    # MÉTODO MODIFICADO: predict_single_frame
-    # -------------------------------------------------------------------------
-
-    def predict_single_frame(self, frame_bgr):
-        if self.trained_classifier is None:
-            raise ValueError("Classifier not trained yet!")
-
-        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-
-        if self.crop_to_299 and self.cropper is not None:
-            cropped, _ = self.cropper.crop(frame_bgr)
-            frame_bgr = cropped
-            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-
-        if self.normalize_colors and self.normalizer and self.normalizer.ref_mean is not None:
-            frame_norm_bgr = self.normalizer.normalize(frame_bgr)
-            frame_rgb = cv2.cvtColor(frame_norm_bgr, cv2.COLOR_BGR2RGB)
-
-        preds, confs = self.trained_classifier.predict([frame_rgb], batch_size=1)
-
-        class_id = int(preds[0])
-        confidence = float(confs[0])
-
-        # Garantir que class_id está no range válido
-        if class_id >= len(self.class_names):
-            class_id = len(self.class_names) - 1
-
-        class_name = self.class_names[class_id]
-
-        return {
-            "class_id": class_id,
-            "class_name": class_name,
-            "confidence": confidence,
-            "color": self.class_colors.get(class_name, "#FFFFFF"),
-            "shortcut": self.get_shortcut_for_class(class_name)
-        }
-
-
-    def classify_images(self, images_rgb, images_raw, image_names, folder_path=None,
-                       parent_widget=None):
-        """
-        Run full classification workflow WITH INTERACTIVE LABELING via Qt.
-        ATUALIZADO: Normalização DEPOIS do labeling, crop para 299×299.
-        """
-        # ===== Step 1: Domain features + PCA (ORIGINAL colors, full resolution) =====
-        features = self.labeler.extract_domain_features(images_rgb)
-        features_scaled = StandardScaler().fit_transform(features)
-        pca_2d = PCA(n_components=2).fit_transform(features_scaled)
-
-        # ===== Step 2: INTERACTIVE labeling via Qt Dialog =====
-        self.labeler.interactive_labeling_qt(
-            images_rgb, image_names, pca_2d,
-            self.n_clusters, self.class_names,
-            parent_widget=parent_widget
-        )
-        self.labeler.expand_labels_nearest_neighbors(images_rgb, n_neighbors=50)
-
-        # ===== Step 2.5: CROP to 299×299 (NOVO - remove dark borders) =====
-        if self.crop_to_299 and self.cropper is not None:
-            print("\n--- Cropping to 299×299 (removing dark borders) ---")
-            cropped_raw, crop_infos = self.cropper.crop_batch(images_raw, image_names)
-            cropped_rgb = [cv2.cvtColor(img, cv2.COLOR_BGR2RGB) for img in cropped_raw]
-            
-            methods = Counter([info['method'] for info in crop_infos])
-            print(f"  Methods: {dict(methods)}")
-            
-            # Salvar cropped para debug
-            for img, name in zip(cropped_raw, image_names):
-                out_path = self.output_dir / "cropped" / f"crop_{name}"
-                cv2.imwrite(str(out_path), img)
-            
-            images_cropped_raw = cropped_raw
-            images_cropped_rgb = cropped_rgb
-        else:
-            images_cropped_raw = images_raw
-            images_cropped_rgb = images_rgb
-
-        # ===== Step 3: Color normalization (AGORA DEPOIS do labeling!) =====
-        if self.normalize_colors and self.normalizer and folder_path:
-            ref_img = self.normalizer.select_reference(image_names, folder_path)
-            self.normalizer.compute_reference_stats(ref_img)
-            normalized_bgr = self.normalizer.normalize_dataset(
-                images_cropped_raw, image_names,
-                output_dir=str(self.output_dir / "normalized")
-            )
-            images_normalized_rgb = [cv2.cvtColor(img, cv2.COLOR_BGR2RGB) 
-                                      for img in normalized_bgr]
-        else:
-            images_normalized_rgb = images_cropped_rgb
-
-        # ===== Step 4: Supervised training =====
-        if self.use_augmentation:
-            X_train, y_train, _ = self.labeler.get_training_data_balanced(
-                images_normalized_rgb, image_names, augment_factor=3
-            )
-        else:
-            X_train, y_train, _ = self.labeler.get_training_data_balanced(
-                images_normalized_rgb, image_names, augment_factor=0
-            )
-
-        n_classes = len(np.unique(y_train))
-
-        if self.fast_mode:
-            # Phase 1: Transfer learning (frozen backbone)
-            print("\n  Phase 1: Transfer learning (frozen backbone)...")
-            classifier = FastInceptionV3Classifier(
-                n_classes=n_classes, freeze_backbone=True
-            )
-            classifier.train(X_train, y_train, epochs=8, batch_size=64, patience=2)
-
-            # Phase 2: Fine-tuning (partial unfreeze)
-            print("\n  Phase 2: Fine-tuning (partial unfreeze)...")
-            classifier = FastInceptionV3Classifier(
-                n_classes=n_classes, freeze_backbone=False
-            )
-            classifier.model.load_state_dict(
-                torch.load("best_model_fast.pth", weights_only=True)
-            )
-            classifier.train(X_train, y_train, epochs=15, batch_size=64, patience=4)
-            self.trained_classifier = classifier
-        else:
-            classifier = FastInceptionV3Classifier(
-                n_classes=n_classes, freeze_backbone=False
-            )
-            classifier.train(X_train, y_train, epochs=20, batch_size=64, patience=5)
-            self.trained_classifier = classifier
-
-        supervised_preds, confidences = classifier.predict(
-            images_normalized_rgb, batch_size=64
-        )
-        
-        # NOVO: Classificador hierárquico (opcional)
-        if self.use_hierarchical:
-            print("\n--- Hierarchical classification (entropy + CNN) ---")
-            cnn_probs = torch.nn.functional.softmax(
-                torch.tensor(self.trained_classifier.model(
-                    torch.stack([self.trained_classifier.transform(img) for img in images_normalized_rgb])
-                )), dim=1
-            ).numpy() if False else None  # Simplificado - na prática extrair probs do predict
-            
-            self.hierarchical_classifier = HierarchicalClassifier(
-                self.entropy_classifier, self.trained_classifier,
-                entropy_weight=0.4, margin=self.entropy_margin
-            )
-            # Para uso futuro em predict_single_frame
-
-        # ===== Step 5: Unsupervised clustering =====
-        unsupervised_preds = self._run_unsupervised(images_normalized_rgb)
-
-        # ===== Step 6: Comparison =====
-        self._compare_methods(supervised_preds, unsupervised_preds, confidences)
-
-        # ===== Step 7: Save ORIGINAL images to result folders (NOVO) =====
-        print("\n--- Saving ORIGINAL images to result folders ---")
-        for i, name in enumerate(image_names):
-            # Supervised: imagem ORIGINAL (não cropped/normalizada)
-            dst = self.output_dir / "supervised" / f"class{supervised_preds[i]}" / name
-            cv2.imwrite(str(dst), images_raw[i])  # images_raw = original!
-            
-        for i, name in enumerate(image_names):
-            # Unsupervised: imagem ORIGINAL
-            dst = self.output_dir / "clusters" / f"cluster{unsupervised_preds[i]}" / name
-            cv2.imwrite(str(dst), images_raw[i])
-
-        # ===== Step 8: Visualizations =====
-        self._visualize_pca_supervised(images_normalized_rgb, supervised_preds, confidences)
-        self._visualize_pca_unsupervised(images_normalized_rgb, unsupervised_preds)
-
-        return supervised_preds, unsupervised_preds, confidences
-
-    def _run_unsupervised(self, images_normalized_rgb):
-        """Unsupervised clustering com InceptionV3 features + entropy features."""
-        model = models.inception_v3(weights=models.Inception_V3_Weights.DEFAULT)
-        model.fc = nn.Identity()
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        model = model.to(device).eval()
-
-        preprocess = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ])
-
-        # Imagens já são 299×299, sem resize necessário
-        cnn_features = []
-        with torch.no_grad():
-            for i in range(0, len(images_normalized_rgb), 32):
-                batch = images_normalized_rgb[i:i + 32]
-                tensors = torch.stack([preprocess(img) for img in batch]).to(device)
-                cnn_features.extend(model(tensors).cpu().numpy())
-
-        cnn_features = np.array(cnn_features)
-        entropy_features = self.labeler.extract_domain_features(images_normalized_rgb)
-        
-        scaler_e = StandardScaler()
-        entropy_scaled = scaler_e.fit_transform(entropy_features)
-        scaler_c = StandardScaler()
-        cnn_scaled = scaler_c.fit_transform(cnn_features)
-
-        combined = np.hstack([cnn_scaled, entropy_scaled])
-
-        n_components = min(512, combined.shape[0], combined.shape[1])
-        images_new = PCA(n_components=n_components).fit_transform(
-            StandardScaler().fit_transform(combined)
-        )
-
-        predictions = KMeans(n_clusters=self.n_clusters, random_state=728, n_init=10).fit_predict(images_new)
-        return predictions
-
-    def _compare_methods(self, supervised, unsupervised, confidences):
-        if len(set(supervised)) == len(set(unsupervised)):
-            cm = confusion_matrix(supervised, unsupervised)
-            row_ind, col_ind = linear_sum_assignment(-cm)
-            mapped = np.zeros_like(unsupervised)
-            for r, c in zip(row_ind, col_ind):
-                mapped[unsupervised == c] = r
-            kappa = cohen_kappa_score(supervised, mapped)
-            print(f"\nCohen's Kappa: {kappa:.3f}")
-
-        print(f"Confidence > 0.6: {np.mean(confidences > 0.6):.1%}")
-        print("\nSupervised distribution:", Counter(supervised))
-        print("Unsupervised distribution:", Counter(unsupervised))
-
-    def _visualize_pca_supervised(self, images, predictions, confidences):
-        """Visualização PCA supervisionada com features do classificador treinado."""
-        if self.trained_classifier is None:
-            return
-
-        trained_features = self.trained_classifier.extract_features(images, batch_size=64)
-        scaled = StandardScaler().fit_transform(trained_features)
-        pca = PCA(n_components=2)
-        pca_2d = pca.fit_transform(scaled)
-        var = pca.explained_variance_ratio_
-
-        colors_list = ['#2ecc71', '#9b59b6', '#e74c3c']
-
-        fig, ax = plt.subplots(figsize=(16, 12))
-
-        for idx in range(len(images)):
-            img = images[idx].astype(np.uint8)
-            thumb = cv2.resize(img, (50, 50))
-            imagebox = OffsetImage(thumb, zoom=0.8)
-            ab = AnnotationBbox(imagebox, (pca_2d[idx, 0], pca_2d[idx, 1]),
-                            frameon=True, pad=0.05, boxcoords="data", zorder=1,
-                            bboxprops=dict(
-                                edgecolor=colors_list[predictions[idx] % len(colors_list)],
-                                linewidth=2.5, facecolor='white', alpha=0.9
-                            ))
-            ax.add_artist(ab)
-
-        for i in range(self.n_clusters):
-            mask = predictions == i
-            n_points = np.sum(mask)
-            if n_points > 0:
-                cls_name = self.class_names[i] if i < len(self.class_names) else f"Class_{i}"
-                ax.scatter(pca_2d[mask, 0], pca_2d[mask, 1],
-                        c=colors_list[i % len(colors_list)],
-                        s=80, alpha=0.6, edgecolors='black', linewidth=0.8,
-                        zorder=10, label=f'{cls_name} ({n_points})')
-
-        info_text = ""
-        for i in range(self.n_clusters):
-            mask = predictions == i
-            if np.sum(mask) > 0:
-                cls_name = self.class_names[i] if i < len(self.class_names) else f"Class_{i}"
-                avg_conf = np.mean(confidences[mask])
-                info_text += f"{cls_name}: avg conf={avg_conf:.2f}\n"
-
-        ax.text(0.02, 0.98, info_text, transform=ax.transAxes, fontsize=10,
-                verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
-
-        ax.set_xlabel('PCA 1', fontsize=12)
-        ax.set_ylabel('PCA 2', fontsize=12)
-        title = 'Supervised Classification - PCA (TRAINED features)'
-        if self.normalize_colors:
-            title += ' (Color Normalized)'
-        ax.set_title(title, fontsize=14, fontweight='bold')
-        ax.legend(loc='upper right', framealpha=0.9)
-        ax.grid(True, alpha=0.2)
-
-        plt.tight_layout()
-        out = self.output_dir / "pca_plots" / "pca_supervised_trained.png"
-        plt.savefig(out, dpi=200, bbox_inches='tight')
-        plt.close()
-
-    def _visualize_pca_unsupervised(self, images, predictions):
-        """NOVO: Visualização PCA não-supervisionada."""
-        model = models.inception_v3(weights=models.Inception_V3_Weights.DEFAULT)
-        model.fc = nn.Identity()
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        model = model.to(device).eval()
-
-        preprocess = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ])
-
-        cnn_features = []
-        with torch.no_grad():
-            for i in range(0, len(images), 32):
-                batch = images[i:i + 32]
-                tensors = torch.stack([preprocess(img) for img in batch]).to(device)
-                cnn_features.extend(model(tensors).cpu().numpy())
-
-        cnn_features = np.array(cnn_features)
-        entropy_features = self.labeler.extract_domain_features(images)
-        
-        combined = np.hstack([
-            StandardScaler().fit_transform(cnn_features),
-            StandardScaler().fit_transform(entropy_features)
-        ])
-        
-        scaled = StandardScaler().fit_transform(combined)
-        pca = PCA(n_components=2)
-        pca_2d = pca.fit_transform(scaled)
-        var = pca.explained_variance_ratio_
-
-        colors_list = ['#2ecc71', '#9b59b6', '#e74c3c']
-
-        fig, ax = plt.subplots(figsize=(14, 10))
-
-        for idx in range(len(images)):
-            img = images[idx].astype(np.uint8)
-            thumb = cv2.resize(img, (50, 50))
-            imagebox = OffsetImage(thumb, zoom=0.8)
-            ab = AnnotationBbox(imagebox, (pca_2d[idx, 0], pca_2d[idx, 1]),
-                            frameon=True, pad=0.05, boxcoords="data", zorder=1,
-                            bboxprops=dict(
-                                edgecolor=colors_list[predictions[idx] % len(colors_list)],
-                                linewidth=2, facecolor='white', alpha=0.9
-                            ))
-            ax.add_artist(ab)
-
-        for i in range(self.n_clusters):
-            mask = predictions == i
-            n_points = np.sum(mask)
-            if n_points > 0:
-                ax.scatter(pca_2d[mask, 0], pca_2d[mask, 1],
-                        c=colors_list[i % len(colors_list)],
-                        s=60, alpha=0.9, edgecolors='black', linewidth=0.8,
-                        zorder=10, label=f'Cluster {i+1} ({n_points})')
-
-        ax.set_xlabel('PCA 1', fontsize=12)
-        ax.set_ylabel('PCA 2', fontsize=12)
-        title = 'Unsupervised Classification - PCA'
-        if self.normalize_colors:
-            title += ' (Color Normalized)'
-        ax.set_title(title, fontsize=14, fontweight='bold')
-        ax.legend(loc='upper right', framealpha=0.9)
-        ax.grid(True, alpha=0.2)
-
-        plt.tight_layout()
-        out = self.output_dir / "pca_plots" / "pca_unsupervised.png"
-        plt.savefig(out, dpi=200, bbox_inches='tight')
-        plt.close()
 
 # =============================================================================
 # QTHREAD - CLASSIFICAÇÃO EM TEMPO REAL
@@ -1920,10 +2014,13 @@ class SeafloorClassificationThread(QThread):
                 self.batch_folder
             )
 
-            self.status.emit("Computando features + PCA...")
-            features = self.classifier.labeler.extract_domain_features(images_rgb)
-            features_scaled = StandardScaler().fit_transform(features)
-            pca_2d = PCA(n_components=2).fit_transform(features_scaled)
+            self.status.emit("Extraindo deep features para PCA...")
+
+            # REVISED: Use deep features for PCA
+            deep_features = self.classifier.deep_feature_extractor.extract(images_rgb)
+            scaler = StandardScaler()
+            deep_scaled = scaler.fit_transform(deep_features)
+            pca_2d = PCA(n_components=2).fit_transform(deep_scaled)
 
             self.status.emit("Aguardando seleção do usuário...")
             self._interactive_result = None
@@ -1944,6 +2041,9 @@ class SeafloorClassificationThread(QThread):
                 return
 
             self.classifier.labeler.labels = self._interactive_result
+
+            # REVISED: Expand with deep features
+            self.status.emit("Expandindo labels com deep features (k-NN)...")
             self.classifier.labeler.expand_labels_nearest_neighbors(images_rgb, n_neighbors=50)
 
             self.status.emit("Treinando classificador...")
@@ -1966,11 +2066,10 @@ class SeafloorClassificationThread(QThread):
             return
 
         self.status.emit("Classificação em tempo real iniciada")
-        self._paused = False  # Flag for pause/resume with video
+        self._paused = False
         processed_count = 0
 
         while self.running:
-            # Check if paused (video is paused)
             if getattr(self, '_paused', False):
                 import time
                 time.sleep(0.1)
@@ -1994,23 +2093,32 @@ class SeafloorClassificationThread(QThread):
 
         self.status.emit(f"Classificação finalizada. {processed_count} frames processados.")
         self.finished_signal.emit(True, None, "Classificação em tempo real finalizada")
+
+
+# =============================================================================
+# DIALOGS
+# =============================================================================
+
 class SeafloorClassificationDialog(QDialog):
     def __init__(self, parent=None, language="pt"):
         super().__init__(parent)
         self.language = language
-        self.setWindowTitle("Classificação de Fundo Marinho (AI-SCW)")
-        self.resize(500, 450)  # Aumentado para novas opções
+        self.setWindowTitle("Classificação de Fundo Marinho (AI-SCW) - REVISADO")
+        self.resize(500, 450)
         self.worker = None
         self._build_ui()
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
-        
+
         info = QLabel(
-            "Classificação de fundo marinho usando AI-SCW<br>"
+            "Classificação de fundo marinho usando AI-SCW <b>[REVISADO]</b><br>"
             "<b>Classes:</b> Sedimento, Coral Fragmento, Coral Vivo<br><br>"
-            "O processo é <b>semi-automático</b>: você selecionará exemplos "
-            "de cada classe visualmente antes do treinamento."
+            "<b>Correções:</b><br>"
+            "• PCA usa deep features (InceptionV3, 2048 dims)<br>"
+            "• Split treino/val ANTES de augmentation<br>"
+            "• 2 fases: 5 épocas (frozen) + 8 épocas (fine-tune)<br>"
+            "• Fine-tuning só descongela Mixed_7b + Mixed_7c"
         )
         info.setWordWrap(True)
         layout.addWidget(info)
@@ -2032,7 +2140,6 @@ class SeafloorClassificationDialog(QDialog):
         self.examples_spin.setValue(10)
         settings_layout.addRow("Exemplos/classe:", self.examples_spin)
 
-        # NOVO: Crop ratio
         self.crop_spin = QDoubleSpinBox()
         self.crop_spin.setRange(0.3, 1.0)
         self.crop_spin.setSingleStep(0.05)
@@ -2044,8 +2151,7 @@ class SeafloorClassificationDialog(QDialog):
         self.normalize_check.setChecked(True)
         self.normalize_check.clicked.connect(self._toggle_normalize)
         settings_layout.addRow("Normalização:", self.normalize_check)
-        
-        # NOVO: Hierarchical classifier toggle
+
         self.hierarchical_check = QPushButton("Classificador hierárquico: DESATIVADO")
         self.hierarchical_check.setCheckable(True)
         self.hierarchical_check.setChecked(False)
@@ -2117,16 +2223,18 @@ class SeafloorClassificationDialog(QDialog):
 
         try:
             images_raw, images_rgb, image_names = classifier.load_images_from_folder(self.folder_path)
-            
-            self.status_text.setText("Computando features + PCA...")
+
+            self.status_text.setText("Extraindo deep features para PCA...")
             QApplication.processEvents()
-            
-            features = classifier.labeler.extract_domain_features(images_rgb)
-            features_scaled = StandardScaler().fit_transform(features)
-            pca_2d = PCA(n_components=2).fit_transform(features_scaled)
+
+            # REVISED: Use deep features for PCA
+            deep_features = classifier.deep_feature_extractor.extract(images_rgb)
+            scaler = StandardScaler()
+            deep_scaled = scaler.fit_transform(deep_features)
+            pca_2d = PCA(n_components=2).fit_transform(deep_scaled)
 
             # INTERACTIVE LABELING
-            self.status_text.setText("Aguardando seleção do usuário...")
+            self.status_text.setText("Aguardando seleção do usuário (PCA de deep features)...")
             QApplication.processEvents()
 
             labels = classifier.labeler.interactive_labeling_qt(
@@ -2138,19 +2246,18 @@ class SeafloorClassificationDialog(QDialog):
             if not labels or len(labels) == 0:
                 QMessageBox.warning(self, "Aviso", 
                     "Nenhum exemplo selecionado. Usando auto-seleção.")
-                # Fallback seria implementado aqui
             else:
                 classifier.labeler.labels = labels
 
-            # Expand labels
-            self.status_text.setText("Expandindo labels (k-NN)...")
+            # Expand labels with deep features
+            self.status_text.setText("Expandindo labels com deep features (k-NN)...")
             QApplication.processEvents()
             classifier.labeler.expand_labels_nearest_neighbors(images_rgb, n_neighbors=50)
 
-            # Full classification
+            # Full classification (REVISED pipeline with proper split)
             self.status_text.setText("Executando classificação completa...")
             QApplication.processEvents()
-            
+
             supervised_preds, unsupervised_preds, confidences = classifier.classify_images(
                 images_rgb, images_raw, image_names,
                 folder_path=self.folder_path,
@@ -2163,9 +2270,9 @@ class SeafloorClassificationDialog(QDialog):
             for cls_id, count in dist.items():
                 name = classifier.class_names[cls_id]
                 msg += f"  {name}: {count}\n"
-            
+
             msg += f"\nConfiança média: {np.mean(confidences):.2f}"
-            
+
             QMessageBox.information(self, "Concluído", msg)
 
         except Exception as e:
@@ -2178,10 +2285,11 @@ class SeafloorClassificationDialog(QDialog):
             self.worker.wait(1000)
         super().reject()
 
+
 class SeafloorClassManager(QDialog):
     """Diálogo para gerenciar categorias do classificador de fundo."""
 
-    classes_changed = pyqtSignal()  # Sinal emitido quando classes mudam
+    classes_changed = pyqtSignal()
 
     def __init__(self, classifier, parent=None):
         super().__init__(parent)
@@ -2194,7 +2302,6 @@ class SeafloorClassManager(QDialog):
     def _build_ui(self):
         layout = QVBoxLayout(self)
 
-        # Instruções
         info = QLabel(
             "<b>Classes fixas:</b> S=Sedimento, F=Fragmento, R=Recife<br>"
             "<b>Classes custom:</b> atalhos 1-9, 0<br>"
@@ -2203,7 +2310,6 @@ class SeafloorClassManager(QDialog):
         info.setWordWrap(True)
         layout.addWidget(info)
 
-        # Lista de classes
         layout.addWidget(QLabel("<b>Categorias:</b>"))
         self.class_list = QListWidget()
         self.class_list.setStyleSheet("""
@@ -2217,7 +2323,6 @@ class SeafloorClassManager(QDialog):
         """)
         layout.addWidget(self.class_list)
 
-        # Adicionar nova
         add_group = QGroupBox("Adicionar Nova Categoria")
         add_layout = QFormLayout(add_group)
 
@@ -2245,13 +2350,11 @@ class SeafloorClassManager(QDialog):
 
         layout.addWidget(add_group)
 
-        # Botão remover
         remove_btn = QPushButton("🗑 Remover Selecionada")
         remove_btn.setStyleSheet("background-color: #f44336; color: white;")
         remove_btn.clicked.connect(self._remove_class)
         layout.addWidget(remove_btn)
 
-        # Fechar
         layout.addStretch()
         btn_layout = QHBoxLayout()
         save_btn = QPushButton("Salvar Configuração")
@@ -2295,14 +2398,11 @@ class SeafloorClassManager(QDialog):
         if not current:
             return
 
-        # Extrair nome da string formatada
         text = current.text()
-        # Formato: "[1] Areia (#FFD700)" ou "[S] Sedimento (#8B4513) [FIXO]"
         if "[FIXO]" in text:
             QMessageBox.warning(self, "Erro", "Classes fixas (S, F, R) não podem ser removidas!")
             return
 
-        # Pegar o nome entre ] e (
         import re
         match = re.search(r'\] (.+?) \(', text)
         if match:
@@ -2327,14 +2427,12 @@ class SeafloorClassManager(QDialog):
             color = cls["color"]
             type_ = cls["type"]
 
-            # Criar item com ícone de cor
             item_text = f"[{shortcut}] {name} ({color})"
             if type_ == "fixed":
                 item_text += " [FIXO]"
 
             item = QListWidgetItem(item_text)
 
-            # Ícone colorido
             pixmap = QPixmap(16, 16)
             pixmap.fill(QColor(color))
             item.setIcon(QIcon(pixmap))

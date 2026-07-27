@@ -24,10 +24,12 @@ class TrainThread(QThread):
         self.error = ""
         self.model_path = ""
         self._hierarchical_history = []  # Histórico de métricas por época
+        self._yolo_model = None  # <-- REFERÊNCIA AO WRAPPER YOLO (não ao BaseModel interno)
 
     def run(self):
         try:  
             model = YOLO("yolo26n.pt")
+            self._yolo_model = model  # <-- GUARDA REFERÊNCIA AO WRAPPER YOLO
 
             def on_epoch_end(trainer):
                 self.epoch_progress.emit(trainer.epoch + 1)
@@ -98,9 +100,9 @@ class TrainThread(QThread):
         Avaliação hierárquica rápida por época (amostra pequena para não travar treino).
         """
         try:
-            # Usa o modelo atual do trainer (não recarrega)
-            model = trainer.model
-            if model is None:
+            # ✅ USA O WRAPPER YOLO GUARDADO, NÃO trainer.model (BaseModel)
+            if self._yolo_model is None:
+                print("[Hierarchical] YOLO wrapper not available for epoch eval")
                 return
 
             data_path = self.train_config.get('data')
@@ -126,8 +128,8 @@ class TrainThread(QThread):
             random.seed(42)
             sample = random.sample(val_images, min(50, len(val_images)))
 
-            # Processa amostra
-            metrics = self._evaluate_sample(model, sample, validator, is_epoch_eval=True)
+            # Processa amostra usando o wrapper YOLO
+            metrics = self._evaluate_sample(self._yolo_model, sample, validator, is_epoch_eval=True)
 
             if metrics:
                 metrics['epoch'] = trainer.epoch
@@ -238,28 +240,34 @@ class TrainThread(QThread):
             traceback.print_exc()
 
     def _find_val_images(self, val_path: Path) -> list:
-        """Encontra todas as imagens de validação no diretório."""
+        """Encontra todas as imagens de validação no diretório do dataset."""
         val_images = []
+        extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff', '.webp'}
 
-        # Padrões comuns de diretório YOLO
-        patterns = [
-            'images/val/*',
-            'images/val/**/*',
-            'val/images/*',
-            'val/images/**/*',
-            'val/*',
-            'val/**/*',
+        # Diretórios comuns onde podem estar as imagens de val
+        possible_val_dirs = [
+            val_path / "images" / "val",
+            val_path / "val" / "images",
+            val_path / "val",
         ]
 
-        extensions = ['*.jpg', '*.jpeg', '*.png', '*.bmp', '*.tif', '*.tiff']
+        for val_dir in possible_val_dirs:
+            if val_dir.exists() and val_dir.is_dir():
+                for f in val_dir.rglob('*'):
+                    if f.is_file() and f.suffix.lower() in extensions:
+                        val_images.append(f)
 
-        for pattern in patterns:
-            for ext in extensions:
-                found = list(val_path.rglob(f'{pattern}/{ext}'))
-                val_images.extend(found)
-                # Também tenta maiúsculas
-                found_upper = list(val_path.rglob(f'{pattern}/{ext.upper()}'))
-                val_images.extend(found_upper)
+        # Se ainda não encontrou, tenta buscar no diretório pai (caso val_path seja subpasta)
+        if not val_images and val_path.parent.exists():
+            for val_dir in [
+                val_path.parent / "images" / "val",
+                val_path.parent / "val" / "images",
+                val_path.parent / "val",
+            ]:
+                if val_dir.exists() and val_dir.is_dir():
+                    for f in val_dir.rglob('*'):
+                        if f.is_file() and f.suffix.lower() in extensions:
+                            val_images.append(f)
 
         # Remove duplicatas mantendo ordem
         seen = set()
@@ -305,7 +313,7 @@ class TrainThread(QThread):
         Avalia uma amostra de imagens com matching IoU-based.
 
         Args:
-            model: Modelo YOLO
+            model: Modelo YOLO (wrapper YOLO, NÃO BaseModel)
             sample: Lista de Path das imagens
             validator: HierarchicalValidator instanciado
             is_epoch_eval: Se True, avaliação rápida por época (menos verbosa)
@@ -326,7 +334,7 @@ class TrainThread(QThread):
         for batch_start in range(0, len(sample), batch_size):
             batch = sample[batch_start:batch_start + batch_size]
 
-            # Predições em batch
+            # Predições em batch usando o wrapper YOLO
             results = model.predict(source=batch, verbose=False, conf=0.25)
 
             for img_path, r in zip(batch, results):
@@ -350,7 +358,8 @@ class TrainThread(QThread):
                 )
 
                 # Matching IoU-based
-                matched_preds, matched_gts, matched_pred_ids, matched_gt_ids, matched_ious =                     matcher.match(pred_boxes, gt_boxes, pred_classes, gt_classes, 
+                matched_preds, matched_gts, matched_pred_ids, matched_gt_ids, matched_ious = \
+                    matcher.match(pred_boxes, gt_boxes, pred_classes, gt_classes, 
                                   pred_ids, gt_ids)
 
                 # Calcula scores hierárquicos para matches
@@ -423,18 +432,45 @@ class TrainThread(QThread):
         gt_classes = []
         gt_ids = []
 
-        # Possíveis caminhos para labels
-        possible_paths = [
+        # Resolve o diretório base do dataset a partir do caminho da imagem
+        # Estrutura esperada: dataset/images/val/imagem.jpg -> dataset/labels/val/imagem.txt
+        img_path = Path(img_path)
+
+        # Tenta inferir o caminho do label a partir da estrutura da imagem
+        possible_label_paths = []
+
+        # Caso 1: images/val/imagem.jpg -> labels/val/imagem.txt
+        parts = img_path.parts
+        if 'images' in parts:
+            img_idx = parts.index('images')
+            base_path = Path(*parts[:img_idx])
+            rel_path = Path(*parts[img_idx + 1:])  # val/imagem.jpg
+            label_path = base_path / 'labels' / rel_path.parent / f"{img_path.stem}.txt"
+            possible_label_paths.append(label_path)
+
+        # Caso 2: val/images/imagem.jpg -> val/labels/imagem.txt
+        if 'val' in parts or 'train' in parts:
+            for split in ['val', 'train']:
+                if split in parts:
+                    split_idx = parts.index(split)
+                    base_path = Path(*parts[:split_idx])
+                    rel_after_split = Path(*parts[split_idx + 1:])  # images/imagem.jpg
+                    if rel_after_split.parts[0] == 'images':
+                        label_path = base_path / split / 'labels' / f"{img_path.stem}.txt"
+                        possible_label_paths.append(label_path)
+
+        # Caso 3: Caminhos relativos genéricos
+        possible_label_paths.extend([
             img_path.parent.parent / 'labels' / 'val' / f"{img_path.stem}.txt",
+            img_path.parent.parent / 'labels' / img_path.parent.name / f"{img_path.stem}.txt",
             img_path.parent / 'labels' / f"{img_path.stem}.txt",
             Path(str(img_path.parent).replace('images', 'labels')) / f"{img_path.stem}.txt",
-            # Padrão YOLO: labels/val/imagem.txt
             img_path.parent.parent.parent / 'labels' / 'val' / f"{img_path.stem}.txt",
             img_path.parent.parent.parent / 'labels' / img_path.parent.name / f"{img_path.stem}.txt",
-        ]
+        ])
 
         label_path = None
-        for p in possible_paths:
+        for p in possible_label_paths:
             if p.exists():
                 label_path = p
                 break
@@ -450,24 +486,30 @@ class TrainThread(QThread):
 
             with open(label_path, 'r') as f:
                 for line in f:
-                    parts = line.strip().split()
+                    line = line.strip()
+                    if not line:
+                        continue
+                    parts = line.split()
                     if len(parts) >= 5:
-                        cls_id = int(parts[0])
-                        x_center = float(parts[1])
-                        y_center = float(parts[2])
-                        width = float(parts[3])
-                        height = float(parts[4])
+                        try:
+                            cls_id = int(parts[0])
+                            x_center = float(parts[1])
+                            y_center = float(parts[2])
+                            width = float(parts[3])
+                            height = float(parts[4])
 
-                        # Converte normalized -> pixel
-                        x1 = (x_center - width/2) * img_w
-                        y1 = (y_center - height/2) * img_h
-                        x2 = (x_center + width/2) * img_w
-                        y2 = (y_center + height/2) * img_h
+                            # Converte normalized -> pixel
+                            x1 = (x_center - width/2) * img_w
+                            y1 = (y_center - height/2) * img_h
+                            x2 = (x_center + width/2) * img_w
+                            y2 = (y_center + height/2) * img_h
 
-                        cls_name = class_names.get(cls_id, str(cls_id))
-                        gt_ids.append(cls_id)
-                        gt_classes.append(cls_name)
-                        gt_boxes.append((x1, y1, x2, y2))
+                            cls_name = class_names.get(cls_id, str(cls_id))
+                            gt_ids.append(cls_id)
+                            gt_classes.append(cls_name)
+                            gt_boxes.append((x1, y1, x2, y2))
+                        except (ValueError, IndexError):
+                            continue
 
         return gt_boxes, gt_classes, gt_ids
 

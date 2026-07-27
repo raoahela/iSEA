@@ -1,0 +1,1414 @@
+{
+  "Actiniaria": [
+    {
+      "name": "Actiniaria",
+      "rank": "order",
+      "aphia_id": 1360
+    },
+    {
+      "name": "Hexacorallia",
+      "rank": "class",
+      "aphia_id": 1340
+    },
+    {
+      "name": "Anthozoa",
+      "rank": "subphylum",
+      "aphia_id": 1292
+    },
+    {
+      "name": "Cnidaria",
+      "rank": "phylum",
+      "aphia_id": 1267
+    },
+    {
+      "name": "Animalia",
+      "rank": "kingdom",
+      "aphia_id": 2
+    },
+    {
+      "name": "Biota",
+      "rank": "superdomain",
+      "aphia_id": 1
+    }
+  ],
+  "Actinopterygii": [
+    {
+      "name": "Actinopterygii",
+      "rank": "gigaclass",
+      "aphia_id": 10194
+    },
+    {
+      "name": "Osteichthyes",
+      "rank": "parvphylum",
+      "aphia_id": 152352
+    },
+    {
+      "name": "Gnathostomata",
+      "rank": "infraphylum",
+      "aphia_id": 1828
+    },
+    {
+      "name": "Vertebrata",
+      "rank": "subphylum",
+      "aphia_id": 146419
+    },
+    {
+      "name": "Chordata",
+      "rank": "phylum",
+      "aphia_id": 1821
+    },
+    {
+      "name": "Animalia",
+      "rank": "kingdom",
+      "aphia_id": 2
+    },
+    {
+      "name": "Biota",
+      "rank": "superdomain",
+      "aphia_id": 1
+    }
+  ],
+  "Angulliformes": [
+    {
+      "name": "Anguilliformes",
+      "rank": "order",
+      "aphia_id": 10295
+    },
+    {
+      "name": "Teleostei",
+      "rank": "class",
+      "aphia_id": 293496
+    },
+    {
+      "name": "Actinopteri",
+      "rank": "superclass",
+      "aphia_id": 843664
+    },
+    {
+      "name": "Actinopterygii",
+      "rank": "gigaclass",
+      "aphia_id": 10194
+    },
+    {
+      "name": "Osteichthyes",
+      "rank": "parvphylum",
+      "aphia_id": 152352
+    },
+    {
+      "name": "Gnathostomata",
+      "rank": "infraphylum",
+      "aphia_id": 1828
+    },
+    {
+      "name": "Vertebrata",
+      "rank": "subphylum",
+      "aphia_id": 146419
+    },
+    {
+      "name": "Chordata",
+      "rank": "phylum",
+      "aphia_id": 1821
+    },
+    {
+      "name": "Animalia",
+      "rank": "kingdom",
+      "aphia_id": 2
+    },
+    {
+      "name": "Biota",
+      "rank": "superdomain",
+      "aphia_id": 1
+    }
+  ],
+  "Asteroidea": [
+    {
+      "name": "Asteroidea",
+      "rank": "class",
+      "aphia_id": 123080
+    },
+    {
+      "name": "Asterozoa",
+      "rank": "subphylum",
+      "aphia_id": 148743
+    },
+    {
+      "name": "Echinodermata",
+      "rank": "phylum",
+      "aphia_id": 1806
+    },
+    {
+      "name": "Animalia",
+      "rank": "kingdom",
+      "aphia_id": 2
+    },
+    {
+      "name": "Biota",
+      "rank": "superdomain",
+      "aphia_id": 1
+    }
+  ],
+  "Bathynomus": [
+    {
+      "name": "Bathynomus",
+      "rank": "genus",
+      "aphia_id": 248508
+    },
+    {
+      "name": "Cirolanidae",
+      "rank": "family",
+      "aphia_id": 118273
+    },
+    {
+      "name": "Cymothooidea",
+      "rank": "superfamily",
+      "aphia_id": 292946
+    },
+    {
+      "name": "Cymothoida",
+      "rank": "suborder",
+      "aphia_id": 292941
+    },
+    {
+      "name": "Isopoda",
+      "rank": "order",
+      "aphia_id": 1131
+    },
+    {
+      "name": "Peracarida",
+      "rank": "superorder",
+      "aphia_id": 1090
+    },
+    {
+      "name": "Eumalacostraca",
+      "rank": "subclass",
+      "aphia_id": 1086
+    },
+    {
+      "name": "Malacostraca",
+      "rank": "class",
+      "aphia_id": 1071
+    },
+    {
+      "name": "Multicrustacea",
+      "rank": "superclass",
+      "aphia_id": 845959
+    },
+    {
+      "name": "Crustacea",
+      "rank": "subphylum",
+      "aphia_id": 1066
+    },
+    {
+      "name": "Arthropoda",
+      "rank": "phylum",
+      "aphia_id": 1065
+    },
+    {
+      "name": "Animalia",
+      "rank": "kingdom",
+      "aphia_id": 2
+    },
+    {
+      "name": "Biota",
+      "rank": "superdomain",
+      "aphia_id": 1
+    }
+  ],
+  "Batoidea": [
+    {
+      "name": "Batoidea",
+      "rank": "infraclass",
+      "aphia_id": 368409
+    },
+    {
+      "name": "Neoselachii",
+      "rank": "subclass",
+      "aphia_id": 368407
+    },
+    {
+      "name": "Elasmobranchii",
+      "rank": "class",
+      "aphia_id": 10193
+    },
+    {
+      "name": "Chondrichthyes",
+      "rank": "parvphylum",
+      "aphia_id": 1517375
+    },
+    {
+      "name": "Gnathostomata",
+      "rank": "infraphylum",
+      "aphia_id": 1828
+    },
+    {
+      "name": "Vertebrata",
+      "rank": "subphylum",
+      "aphia_id": 146419
+    },
+    {
+      "name": "Chordata",
+      "rank": "phylum",
+      "aphia_id": 1821
+    },
+    {
+      "name": "Animalia",
+      "rank": "kingdom",
+      "aphia_id": 2
+    },
+    {
+      "name": "Biota",
+      "rank": "superdomain",
+      "aphia_id": 1
+    }
+  ],
+  "Caryophylliidae": [
+    {
+      "name": "Caryophylliidae",
+      "rank": "family",
+      "aphia_id": 135073
+    },
+    {
+      "name": "Vacatina",
+      "rank": "suborder",
+      "aphia_id": 1517259
+    },
+    {
+      "name": "Scleractinia",
+      "rank": "order",
+      "aphia_id": 1363
+    },
+    {
+      "name": "Hexacorallia",
+      "rank": "class",
+      "aphia_id": 1340
+    },
+    {
+      "name": "Anthozoa",
+      "rank": "subphylum",
+      "aphia_id": 1292
+    },
+    {
+      "name": "Cnidaria",
+      "rank": "phylum",
+      "aphia_id": 1267
+    },
+    {
+      "name": "Animalia",
+      "rank": "kingdom",
+      "aphia_id": 2
+    },
+    {
+      "name": "Biota",
+      "rank": "superdomain",
+      "aphia_id": 1
+    }
+  ],
+  "Chaceon": [
+    {
+      "name": "Chaceon",
+      "rank": "genus",
+      "aphia_id": 106917
+    },
+    {
+      "name": "Geryoninae",
+      "rank": "subfamily",
+      "aphia_id": 877428
+    },
+    {
+      "name": "Geryonidae",
+      "rank": "family",
+      "aphia_id": 106762
+    },
+    {
+      "name": "Portunoidea",
+      "rank": "superfamily",
+      "aphia_id": 106702
+    },
+    {
+      "name": "Heterotremata",
+      "rank": "subsection",
+      "aphia_id": 106680
+    },
+    {
+      "name": "Eubrachyura",
+      "rank": "section",
+      "aphia_id": 106679
+    },
+    {
+      "name": "Brachyura",
+      "rank": "infraorder",
+      "aphia_id": 106673
+    },
+    {
+      "name": "Pleocyemata",
+      "rank": "suborder",
+      "aphia_id": 106670
+    },
+    {
+      "name": "Decapoda",
+      "rank": "order",
+      "aphia_id": 1130
+    },
+    {
+      "name": "Eucarida",
+      "rank": "superorder",
+      "aphia_id": 1089
+    },
+    {
+      "name": "Eumalacostraca",
+      "rank": "subclass",
+      "aphia_id": 1086
+    },
+    {
+      "name": "Malacostraca",
+      "rank": "class",
+      "aphia_id": 1071
+    },
+    {
+      "name": "Multicrustacea",
+      "rank": "superclass",
+      "aphia_id": 845959
+    },
+    {
+      "name": "Crustacea",
+      "rank": "subphylum",
+      "aphia_id": 1066
+    },
+    {
+      "name": "Arthropoda",
+      "rank": "phylum",
+      "aphia_id": 1065
+    },
+    {
+      "name": "Animalia",
+      "rank": "kingdom",
+      "aphia_id": 2
+    },
+    {
+      "name": "Biota",
+      "rank": "superdomain",
+      "aphia_id": 1
+    }
+  ],
+  "Cidaroida": [
+    {
+      "name": "Cidaroida",
+      "rank": "order",
+      "aphia_id": 123099
+    },
+    {
+      "name": "Cidaroidea",
+      "rank": "subclass",
+      "aphia_id": 510498
+    },
+    {
+      "name": "Echinoidea",
+      "rank": "class",
+      "aphia_id": 123082
+    },
+    {
+      "name": "Echinozoa",
+      "rank": "subphylum",
+      "aphia_id": 148744
+    },
+    {
+      "name": "Echinodermata",
+      "rank": "phylum",
+      "aphia_id": 1806
+    },
+    {
+      "name": "Animalia",
+      "rank": "kingdom",
+      "aphia_id": 2
+    },
+    {
+      "name": "Biota",
+      "rank": "superdomain",
+      "aphia_id": 1
+    }
+  ],
+  "Crinoidea": [
+    {
+      "name": "Crinoidea",
+      "rank": "class",
+      "aphia_id": 123081
+    },
+    {
+      "name": "Crinozoa",
+      "rank": "subphylum",
+      "aphia_id": 147423
+    },
+    {
+      "name": "Echinodermata",
+      "rank": "phylum",
+      "aphia_id": 1806
+    },
+    {
+      "name": "Animalia",
+      "rank": "kingdom",
+      "aphia_id": 2
+    },
+    {
+      "name": "Biota",
+      "rank": "superdomain",
+      "aphia_id": 1
+    }
+  ],
+  "Decapoda": [
+    {
+      "name": "Decapoda",
+      "rank": "order",
+      "aphia_id": 1130
+    },
+    {
+      "name": "Eucarida",
+      "rank": "superorder",
+      "aphia_id": 1089
+    },
+    {
+      "name": "Eumalacostraca",
+      "rank": "subclass",
+      "aphia_id": 1086
+    },
+    {
+      "name": "Malacostraca",
+      "rank": "class",
+      "aphia_id": 1071
+    },
+    {
+      "name": "Multicrustacea",
+      "rank": "superclass",
+      "aphia_id": 845959
+    },
+    {
+      "name": "Crustacea",
+      "rank": "subphylum",
+      "aphia_id": 1066
+    },
+    {
+      "name": "Arthropoda",
+      "rank": "phylum",
+      "aphia_id": 1065
+    },
+    {
+      "name": "Animalia",
+      "rank": "kingdom",
+      "aphia_id": 2
+    },
+    {
+      "name": "Biota",
+      "rank": "superdomain",
+      "aphia_id": 1
+    }
+  ],
+  "Desmophyllum pertusum": [
+    {
+      "name": "Desmophyllum pertusum",
+      "rank": "species",
+      "aphia_id": 1245747
+    },
+    {
+      "name": "Desmophyllum",
+      "rank": "genus",
+      "aphia_id": 135093
+    },
+    {
+      "name": "Caryophylliidae",
+      "rank": "family",
+      "aphia_id": 135073
+    },
+    {
+      "name": "Vacatina",
+      "rank": "suborder",
+      "aphia_id": 1517259
+    },
+    {
+      "name": "Scleractinia",
+      "rank": "order",
+      "aphia_id": 1363
+    },
+    {
+      "name": "Hexacorallia",
+      "rank": "class",
+      "aphia_id": 1340
+    },
+    {
+      "name": "Anthozoa",
+      "rank": "subphylum",
+      "aphia_id": 1292
+    },
+    {
+      "name": "Cnidaria",
+      "rank": "phylum",
+      "aphia_id": 1267
+    },
+    {
+      "name": "Animalia",
+      "rank": "kingdom",
+      "aphia_id": 2
+    },
+    {
+      "name": "Biota",
+      "rank": "superdomain",
+      "aphia_id": 1
+    }
+  ],
+  "Diadematidae": [
+    {
+      "name": "Diadematidae",
+      "rank": "family",
+      "aphia_id": 123163
+    },
+    {
+      "name": "Diadematoida",
+      "rank": "order",
+      "aphia_id": 510522
+    },
+    {
+      "name": "Diadematacea",
+      "rank": "superorder",
+      "aphia_id": 152528
+    },
+    {
+      "name": "Aulodonta",
+      "rank": "infraclass",
+      "aphia_id": 510502
+    },
+    {
+      "name": "Euechinoidea",
+      "rank": "subclass",
+      "aphia_id": 149854
+    },
+    {
+      "name": "Echinoidea",
+      "rank": "class",
+      "aphia_id": 123082
+    },
+    {
+      "name": "Echinozoa",
+      "rank": "subphylum",
+      "aphia_id": 148744
+    },
+    {
+      "name": "Echinodermata",
+      "rank": "phylum",
+      "aphia_id": 1806
+    },
+    {
+      "name": "Animalia",
+      "rank": "kingdom",
+      "aphia_id": 2
+    },
+    {
+      "name": "Biota",
+      "rank": "superdomain",
+      "aphia_id": 1
+    }
+  ],
+  "Dibranchus": [
+    {
+      "name": "Dibranchus",
+      "rank": "genus",
+      "aphia_id": 125804
+    },
+    {
+      "name": "Ogcocephalidae",
+      "rank": "family",
+      "aphia_id": 125495
+    },
+    {
+      "name": "Ogcocephaloidei",
+      "rank": "suborder",
+      "aphia_id": 1849276
+    },
+    {
+      "name": "Lophiiformes",
+      "rank": "order",
+      "aphia_id": 10316
+    },
+    {
+      "name": "Teleostei",
+      "rank": "class",
+      "aphia_id": 293496
+    },
+    {
+      "name": "Actinopteri",
+      "rank": "superclass",
+      "aphia_id": 843664
+    },
+    {
+      "name": "Actinopterygii",
+      "rank": "gigaclass",
+      "aphia_id": 10194
+    },
+    {
+      "name": "Osteichthyes",
+      "rank": "parvphylum",
+      "aphia_id": 152352
+    },
+    {
+      "name": "Gnathostomata",
+      "rank": "infraphylum",
+      "aphia_id": 1828
+    },
+    {
+      "name": "Vertebrata",
+      "rank": "subphylum",
+      "aphia_id": 146419
+    },
+    {
+      "name": "Chordata",
+      "rank": "phylum",
+      "aphia_id": 1821
+    },
+    {
+      "name": "Animalia",
+      "rank": "kingdom",
+      "aphia_id": 2
+    },
+    {
+      "name": "Biota",
+      "rank": "superdomain",
+      "aphia_id": 1
+    }
+  ],
+  "Enallopsammia rostrata": [
+    {
+      "name": "Enallopsammia rostrata",
+      "rank": "species",
+      "aphia_id": 135190
+    },
+    {
+      "name": "Enallopsammia",
+      "rank": "genus",
+      "aphia_id": 135112
+    },
+    {
+      "name": "Dendrophylliidae",
+      "rank": "family",
+      "aphia_id": 135074
+    },
+    {
+      "name": "Refertina",
+      "rank": "suborder",
+      "aphia_id": 1517258
+    },
+    {
+      "name": "Scleractinia",
+      "rank": "order",
+      "aphia_id": 1363
+    },
+    {
+      "name": "Hexacorallia",
+      "rank": "class",
+      "aphia_id": 1340
+    },
+    {
+      "name": "Anthozoa",
+      "rank": "subphylum",
+      "aphia_id": 1292
+    },
+    {
+      "name": "Cnidaria",
+      "rank": "phylum",
+      "aphia_id": 1267
+    },
+    {
+      "name": "Animalia",
+      "rank": "kingdom",
+      "aphia_id": 2
+    },
+    {
+      "name": "Biota",
+      "rank": "superdomain",
+      "aphia_id": 1
+    }
+  ],
+  "Hexactinellida": [
+    {
+      "name": "Hexactinellida",
+      "rank": "class",
+      "aphia_id": 22612
+    },
+    {
+      "name": "Porifera",
+      "rank": "phylum",
+      "aphia_id": 558
+    },
+    {
+      "name": "Animalia",
+      "rank": "kingdom",
+      "aphia_id": 2
+    },
+    {
+      "name": "Biota",
+      "rank": "superdomain",
+      "aphia_id": 1
+    }
+  ],
+  "Hyalonema": [
+    {
+      "name": "Hyalonema",
+      "rank": "genus",
+      "aphia_id": 132096
+    },
+    {
+      "name": "Hyalonematidae",
+      "rank": "family",
+      "aphia_id": 131684
+    },
+    {
+      "name": "Amphidiscosida",
+      "rank": "order",
+      "aphia_id": 160632
+    },
+    {
+      "name": "Amphidiscophora",
+      "rank": "subclass",
+      "aphia_id": 131607
+    },
+    {
+      "name": "Hexactinellida",
+      "rank": "class",
+      "aphia_id": 22612
+    },
+    {
+      "name": "Porifera",
+      "rank": "phylum",
+      "aphia_id": 558
+    },
+    {
+      "name": "Animalia",
+      "rank": "kingdom",
+      "aphia_id": 2
+    },
+    {
+      "name": "Biota",
+      "rank": "superdomain",
+      "aphia_id": 1
+    }
+  ],
+  "Isididae": [
+    {
+      "name": "Isididae",
+      "rank": "family",
+      "aphia_id": 125276
+    },
+    {
+      "name": "Malacalcyonacea",
+      "rank": "order",
+      "aphia_id": 1609357
+    },
+    {
+      "name": "Octocorallia",
+      "rank": "class",
+      "aphia_id": 1341
+    },
+    {
+      "name": "Anthozoa",
+      "rank": "subphylum",
+      "aphia_id": 1292
+    },
+    {
+      "name": "Cnidaria",
+      "rank": "phylum",
+      "aphia_id": 1267
+    },
+    {
+      "name": "Animalia",
+      "rank": "kingdom",
+      "aphia_id": 2
+    },
+    {
+      "name": "Biota",
+      "rank": "superdomain",
+      "aphia_id": 1
+    }
+  ],
+  "Macrouridae": [
+    {
+      "name": "Macrouridae",
+      "rank": "family",
+      "aphia_id": 125471
+    },
+    {
+      "name": "Gadiformes",
+      "rank": "order",
+      "aphia_id": 10313
+    },
+    {
+      "name": "Teleostei",
+      "rank": "class",
+      "aphia_id": 293496
+    },
+    {
+      "name": "Actinopteri",
+      "rank": "superclass",
+      "aphia_id": 843664
+    },
+    {
+      "name": "Actinopterygii",
+      "rank": "gigaclass",
+      "aphia_id": 10194
+    },
+    {
+      "name": "Osteichthyes",
+      "rank": "parvphylum",
+      "aphia_id": 152352
+    },
+    {
+      "name": "Gnathostomata",
+      "rank": "infraphylum",
+      "aphia_id": 1828
+    },
+    {
+      "name": "Vertebrata",
+      "rank": "subphylum",
+      "aphia_id": 146419
+    },
+    {
+      "name": "Chordata",
+      "rank": "phylum",
+      "aphia_id": 1821
+    },
+    {
+      "name": "Animalia",
+      "rank": "kingdom",
+      "aphia_id": 2
+    },
+    {
+      "name": "Biota",
+      "rank": "superdomain",
+      "aphia_id": 1
+    }
+  ],
+  "Madrepora oculata": [
+    {
+      "name": "Madrepora oculata",
+      "rank": "species",
+      "aphia_id": 135209
+    },
+    {
+      "name": "Madrepora",
+      "rank": "genus",
+      "aphia_id": 135123
+    },
+    {
+      "name": "Madreporidae",
+      "rank": "family",
+      "aphia_id": 1749892
+    },
+    {
+      "name": "Vacatina",
+      "rank": "suborder",
+      "aphia_id": 1517259
+    },
+    {
+      "name": "Scleractinia",
+      "rank": "order",
+      "aphia_id": 1363
+    },
+    {
+      "name": "Hexacorallia",
+      "rank": "class",
+      "aphia_id": 1340
+    },
+    {
+      "name": "Anthozoa",
+      "rank": "subphylum",
+      "aphia_id": 1292
+    },
+    {
+      "name": "Cnidaria",
+      "rank": "phylum",
+      "aphia_id": 1267
+    },
+    {
+      "name": "Animalia",
+      "rank": "kingdom",
+      "aphia_id": 2
+    },
+    {
+      "name": "Biota",
+      "rank": "superdomain",
+      "aphia_id": 1
+    }
+  ],
+  "Majidae": [
+    {
+      "name": "Majidae",
+      "rank": "family",
+      "aphia_id": 106760
+    },
+    {
+      "name": "Majoidea",
+      "rank": "superfamily",
+      "aphia_id": 106700
+    },
+    {
+      "name": "Heterotremata",
+      "rank": "subsection",
+      "aphia_id": 106680
+    },
+    {
+      "name": "Eubrachyura",
+      "rank": "section",
+      "aphia_id": 106679
+    },
+    {
+      "name": "Brachyura",
+      "rank": "infraorder",
+      "aphia_id": 106673
+    },
+    {
+      "name": "Pleocyemata",
+      "rank": "suborder",
+      "aphia_id": 106670
+    },
+    {
+      "name": "Decapoda",
+      "rank": "order",
+      "aphia_id": 1130
+    },
+    {
+      "name": "Eucarida",
+      "rank": "superorder",
+      "aphia_id": 1089
+    },
+    {
+      "name": "Eumalacostraca",
+      "rank": "subclass",
+      "aphia_id": 1086
+    },
+    {
+      "name": "Malacostraca",
+      "rank": "class",
+      "aphia_id": 1071
+    },
+    {
+      "name": "Multicrustacea",
+      "rank": "superclass",
+      "aphia_id": 845959
+    },
+    {
+      "name": "Crustacea",
+      "rank": "subphylum",
+      "aphia_id": 1066
+    },
+    {
+      "name": "Arthropoda",
+      "rank": "phylum",
+      "aphia_id": 1065
+    },
+    {
+      "name": "Animalia",
+      "rank": "kingdom",
+      "aphia_id": 2
+    },
+    {
+      "name": "Biota",
+      "rank": "superdomain",
+      "aphia_id": 1
+    }
+  ],
+  "Malacalcyonacea": [
+    {
+      "name": "Malacalcyonacea",
+      "rank": "order",
+      "aphia_id": 1609357
+    },
+    {
+      "name": "Octocorallia",
+      "rank": "class",
+      "aphia_id": 1341
+    },
+    {
+      "name": "Anthozoa",
+      "rank": "subphylum",
+      "aphia_id": 1292
+    },
+    {
+      "name": "Cnidaria",
+      "rank": "phylum",
+      "aphia_id": 1267
+    },
+    {
+      "name": "Animalia",
+      "rank": "kingdom",
+      "aphia_id": 2
+    },
+    {
+      "name": "Biota",
+      "rank": "superdomain",
+      "aphia_id": 1
+    }
+  ],
+  "Octopoda": [
+    {
+      "name": "Octopoda",
+      "rank": "order",
+      "aphia_id": 11718
+    },
+    {
+      "name": "Octopodiformes",
+      "rank": "superorder",
+      "aphia_id": 325343
+    },
+    {
+      "name": "Coleoidea",
+      "rank": "subclass",
+      "aphia_id": 11709
+    },
+    {
+      "name": "Cephalopoda",
+      "rank": "class",
+      "aphia_id": 11707
+    },
+    {
+      "name": "Mollusca",
+      "rank": "phylum",
+      "aphia_id": 51
+    },
+    {
+      "name": "Animalia",
+      "rank": "kingdom",
+      "aphia_id": 2
+    },
+    {
+      "name": "Biota",
+      "rank": "superdomain",
+      "aphia_id": 1
+    }
+  ],
+  "Paguroidea": [
+    {
+      "name": "Paguroidea",
+      "rank": "superfamily",
+      "aphia_id": 106687
+    },
+    {
+      "name": "Anomura",
+      "rank": "infraorder",
+      "aphia_id": 106671
+    },
+    {
+      "name": "Pleocyemata",
+      "rank": "suborder",
+      "aphia_id": 106670
+    },
+    {
+      "name": "Decapoda",
+      "rank": "order",
+      "aphia_id": 1130
+    },
+    {
+      "name": "Eucarida",
+      "rank": "superorder",
+      "aphia_id": 1089
+    },
+    {
+      "name": "Eumalacostraca",
+      "rank": "subclass",
+      "aphia_id": 1086
+    },
+    {
+      "name": "Malacostraca",
+      "rank": "class",
+      "aphia_id": 1071
+    },
+    {
+      "name": "Multicrustacea",
+      "rank": "superclass",
+      "aphia_id": 845959
+    },
+    {
+      "name": "Crustacea",
+      "rank": "subphylum",
+      "aphia_id": 1066
+    },
+    {
+      "name": "Arthropoda",
+      "rank": "phylum",
+      "aphia_id": 1065
+    },
+    {
+      "name": "Animalia",
+      "rank": "kingdom",
+      "aphia_id": 2
+    },
+    {
+      "name": "Biota",
+      "rank": "superdomain",
+      "aphia_id": 1
+    }
+  ],
+  "Porifera": [
+    {
+      "name": "Porifera",
+      "rank": "phylum",
+      "aphia_id": 558
+    },
+    {
+      "name": "Animalia",
+      "rank": "kingdom",
+      "aphia_id": 2
+    },
+    {
+      "name": "Biota",
+      "rank": "superdomain",
+      "aphia_id": 1
+    }
+  ],
+  "Primnoidae": [
+    {
+      "name": "Primnoidae",
+      "rank": "family",
+      "aphia_id": 125278
+    },
+    {
+      "name": "Scleralcyonacea",
+      "rank": "order",
+      "aphia_id": 1609355
+    },
+    {
+      "name": "Octocorallia",
+      "rank": "class",
+      "aphia_id": 1341
+    },
+    {
+      "name": "Anthozoa",
+      "rank": "subphylum",
+      "aphia_id": 1292
+    },
+    {
+      "name": "Cnidaria",
+      "rank": "phylum",
+      "aphia_id": 1267
+    },
+    {
+      "name": "Animalia",
+      "rank": "kingdom",
+      "aphia_id": 2
+    },
+    {
+      "name": "Biota",
+      "rank": "superdomain",
+      "aphia_id": 1
+    }
+  ],
+  "Schizopathidae": [
+    {
+      "name": "Schizopathidae",
+      "rank": "family",
+      "aphia_id": 266964
+    },
+    {
+      "name": "Antipatharia",
+      "rank": "order",
+      "aphia_id": 22549
+    },
+    {
+      "name": "Hexacorallia",
+      "rank": "class",
+      "aphia_id": 1340
+    },
+    {
+      "name": "Anthozoa",
+      "rank": "subphylum",
+      "aphia_id": 1292
+    },
+    {
+      "name": "Cnidaria",
+      "rank": "phylum",
+      "aphia_id": 1267
+    },
+    {
+      "name": "Animalia",
+      "rank": "kingdom",
+      "aphia_id": 2
+    },
+    {
+      "name": "Biota",
+      "rank": "superdomain",
+      "aphia_id": 1
+    }
+  ],
+  "Selachii": [
+    {
+      "name": "Selachii",
+      "rank": "infraclass",
+      "aphia_id": 368408
+    },
+    {
+      "name": "Neoselachii",
+      "rank": "subclass",
+      "aphia_id": 368407
+    },
+    {
+      "name": "Elasmobranchii",
+      "rank": "class",
+      "aphia_id": 10193
+    },
+    {
+      "name": "Chondrichthyes",
+      "rank": "parvphylum",
+      "aphia_id": 1517375
+    },
+    {
+      "name": "Gnathostomata",
+      "rank": "infraphylum",
+      "aphia_id": 1828
+    },
+    {
+      "name": "Vertebrata",
+      "rank": "subphylum",
+      "aphia_id": 146419
+    },
+    {
+      "name": "Chordata",
+      "rank": "phylum",
+      "aphia_id": 1821
+    },
+    {
+      "name": "Animalia",
+      "rank": "kingdom",
+      "aphia_id": 2
+    },
+    {
+      "name": "Biota",
+      "rank": "superdomain",
+      "aphia_id": 1
+    }
+  ],
+  "Solenosmilia variabilis": [
+    {
+      "name": "Solenosmilia variabilis",
+      "rank": "species",
+      "aphia_id": 135168
+    },
+    {
+      "name": "Solenosmilia",
+      "rank": "genus",
+      "aphia_id": 135101
+    },
+    {
+      "name": "Caryophylliidae",
+      "rank": "family",
+      "aphia_id": 135073
+    },
+    {
+      "name": "Vacatina",
+      "rank": "suborder",
+      "aphia_id": 1517259
+    },
+    {
+      "name": "Scleractinia",
+      "rank": "order",
+      "aphia_id": 1363
+    },
+    {
+      "name": "Hexacorallia",
+      "rank": "class",
+      "aphia_id": 1340
+    },
+    {
+      "name": "Anthozoa",
+      "rank": "subphylum",
+      "aphia_id": 1292
+    },
+    {
+      "name": "Cnidaria",
+      "rank": "phylum",
+      "aphia_id": 1267
+    },
+    {
+      "name": "Animalia",
+      "rank": "kingdom",
+      "aphia_id": 2
+    },
+    {
+      "name": "Biota",
+      "rank": "superdomain",
+      "aphia_id": 1
+    }
+  ],
+  "Stylasteridae": [
+    {
+      "name": "Stylasteridae",
+      "rank": "family",
+      "aphia_id": 22805
+    },
+    {
+      "name": "Filifera",
+      "rank": "suborder",
+      "aphia_id": 16352
+    },
+    {
+      "name": "Anthoathecata",
+      "rank": "order",
+      "aphia_id": 13551
+    },
+    {
+      "name": "Hydroidolina",
+      "rank": "subclass",
+      "aphia_id": 19494
+    },
+    {
+      "name": "Hydrozoa",
+      "rank": "class",
+      "aphia_id": 1337
+    },
+    {
+      "name": "Medusozoa",
+      "rank": "subphylum",
+      "aphia_id": 1740301
+    },
+    {
+      "name": "Cnidaria",
+      "rank": "phylum",
+      "aphia_id": 1267
+    },
+    {
+      "name": "Animalia",
+      "rank": "kingdom",
+      "aphia_id": 2
+    },
+    {
+      "name": "Biota",
+      "rank": "superdomain",
+      "aphia_id": 1
+    }
+  ],
+  "Zoantharia": [
+    {
+      "name": "Zoantharia",
+      "rank": "order",
+      "aphia_id": 607338
+    },
+    {
+      "name": "Hexacorallia",
+      "rank": "class",
+      "aphia_id": 1340
+    },
+    {
+      "name": "Anthozoa",
+      "rank": "subphylum",
+      "aphia_id": 1292
+    },
+    {
+      "name": "Cnidaria",
+      "rank": "phylum",
+      "aphia_id": 1267
+    },
+    {
+      "name": "Animalia",
+      "rank": "kingdom",
+      "aphia_id": 2
+    },
+    {
+      "name": "Biota",
+      "rank": "superdomain",
+      "aphia_id": 1
+    }
+  ]
+}
