@@ -234,4 +234,3 @@ This project is licensed under the [GNU Affero General Public License v3.0](LICE
 
 This application integrates Ultralytics YOLO, which is also licensed under AGPL-3.0.
 
-> **Status**: Work in Progress — Features and interface may evolve.
