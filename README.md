@@ -4,7 +4,7 @@
 
 ---
 
-## 📋 Overview
+## Overview
 
 iSEA is a video annotation platform specifically designed for marine biology research. It integrates state-of-the-art computer vision models to assist researchers in annotating underwater imagery efficiently.
 
@@ -19,7 +19,7 @@ The tool supports:
 
 ---
 
-## 🚀 Key Features
+## Key Features
 
 ### **Core Functionality**
 | Feature | Description |
@@ -41,7 +41,7 @@ The tool supports:
 
 ---
 
-## 🛠️ Installation
+## Installation
 
 ### Prerequisites
 - Python 3.10+
@@ -61,7 +61,7 @@ pip install -r requirements.txt
 
 ---
 
-## 🎮 Usage
+## Usage
 
 ### Starting the Application
 ```bash
@@ -122,7 +122,7 @@ Real-time classification during video playback:
 
 ---
 
-## 📤 Export & Training
+## Export & Training
 
 ### YOLO Detection Export
 **Training → Export YOLO Annotations**
@@ -153,7 +153,7 @@ Real-time classification during video playback:
 
 ---
 
-## ⌨️ Complete Keyboard Shortcuts
+## Complete Keyboard Shortcuts
 
 | Shortcut | Action |
 |----------|--------|
@@ -184,7 +184,7 @@ Real-time classification during video playback:
 
 ---
 
-## 📊 Data Export Format
+## Data Export Format
 
 ### Annotations CSV
 Saved annotations include:
