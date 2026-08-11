@@ -1,6 +1,6 @@
 """
 Seafloor Classification Module for iSEA 
-Classes: Sedimento, Coral_Fragmento, Coral_Vivo + custom classes
+Classes: Sedimento, Coral_Fragmento, Recife_Coral + custom classes
 """
 
 import cv2
@@ -11,6 +11,7 @@ import json
 import numpy as np
 from pathlib import Path
 from collections import Counter
+from datetime import datetime
 from skimage.measure import shannon_entropy
 from skimage.feature import graycomatrix, graycoprops
 from sklearn.cluster import KMeans
@@ -27,7 +28,7 @@ from torchvision import models
 from torch.utils.data import Dataset, DataLoader
 from torch.cuda.amp import autocast, GradScaler
 import matplotlib
-matplotlib.use('Qt5Agg')
+matplotlib.use('qtagg')
 import matplotlib.pyplot as plt
 from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 
@@ -39,6 +40,28 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QGridLayout, QScrollArea, QWidget, QListWidget, QListWidgetItem,
                              QLineEdit, QColorDialog)
 from PyQt6.QtGui import QImage, QPixmap, QColor, QIcon
+
+from .translations import TEXTS
+
+
+def _t(key, lang="pt", *args):
+    """Translation helper."""
+    text = TEXTS.get(lang, TEXTS["pt"]).get(key, key)
+    if args:
+        return text.format(*args)
+    return text
+
+
+def _tc(name, lang="pt"):
+    """Translate class name for display."""
+    if lang == "en":
+        mapping = {
+            "Sedimento": "Sediment",
+            "Coral_Fragmento": "Coral Fragment",
+            "Recife_Coral": "Coral Reef"
+        }
+        return mapping.get(name, name)
+    return name
 
 
 # =============================================================================
@@ -133,7 +156,7 @@ class ColorNormalizer:
 
     def normalize(self, img):
         if self.ref_mean is None:
-            raise ValueError("Reference stats not computed.")
+            raise ValueError(_t("reference_stats_not_computed", self.language))
 
         img_lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB).astype(np.float32)
         src_mean = np.mean(img_lab, axis=(0, 1))
@@ -249,11 +272,12 @@ class DeepFeatureExtractor:
                              std=[0.229, 0.224, 0.225]),
         ])
 
-    def extract(self, images, batch_size=32):
+    def extract(self, images, batch_size=32, progress_callback=None):
         """Extract deep features from images."""
         features = []
+        total = len(images)
         with torch.no_grad():
-            for i in range(0, len(images), batch_size):
+            for i in range(0, total, batch_size):
                 batch = images[i:i + batch_size]
                 tensors = []
                 for img in batch:
@@ -269,6 +293,10 @@ class DeepFeatureExtractor:
                 batch_tensor = torch.stack(tensors).to(self.device)
                 feats = self.model(batch_tensor).cpu().numpy()
                 features.extend(feats)
+
+                if progress_callback:
+                    pct = min(100, int((i + len(batch)) / total * 100))
+                    progress_callback(pct)
 
         return np.array(features)
 
@@ -289,7 +317,7 @@ class EntropyClassifier:
     """
     def __init__(self, thresholds=(6.471, 6.980), class_names=None):
         self.thresholds = thresholds
-        self.class_names = class_names or ["Sedimento", "Coral_Fragmento", "Coral_Vivo"]
+        self.class_names = class_names or ["Sedimento", "Coral_Fragmento", "Recife_Coral"]
         self.entropies = None
         self.pseudo_labels = None
         self.confidence_scores = None
@@ -354,24 +382,24 @@ class EntropyClassifier:
 
     def print_report(self, labels=None):
         print("\n" + "=" * 60)
-        print("RELATORIO: ENTROPIA E CLASSE")
+        print(_t("entropy_class_report", self.language))
         print("=" * 60)
-        print(f"Total de imagens: {len(self.entropies)}")
+        print(_t("total_images", self.language, len(self.entropies)))
         stats = self.get_stats()
-        print(f"  Entropia global: media={stats['mean']:.4f}, std={stats['std']:.4f}")
-        print(f"  Range: [{stats['min']:.4f}, {stats['max']:.4f}]")
+        print(_t("global_entropy", self.language, stats["mean"], stats["std"]))
+        print(_t("range_format", self.language, stats["min"], stats["max"]))
         if labels is not None:
-            print("\n  Por classe:")
+            print("\n  " + _t("per_class", self.language))
             for i, name in enumerate(self.class_names):
                 mask = labels == i
                 n = np.sum(mask)
                 if n > 0:
                     mean = np.mean(self.entropies[mask])
                     std = np.std(self.entropies[mask])
-                    print(f"    Classe {name}: n={n}, media={mean:.4f}, std={std:.4f}")
+                    print(_t("class_stats", self.language, name, n, mean, std))
         if self.pseudo_labels is not None:
             n_safe = np.sum(self.pseudo_labels != -1)
-            print(f"\n  Pseudo-labels seguros: {n_safe}/{len(self.entropies)} ({n_safe/len(self.entropies):.1%})")
+            print(_t("safe_pseudo_labels", self.language, n_safe, len(self.entropies), n_safe/len(self.entropies)))
         print("=" * 60)
 
 
@@ -472,7 +500,7 @@ class SemiAutoLabeler:
         self.deep_feature_extractor = extractor
 
     def interactive_labeling_qt(self, images, image_names, pca_2d, n_classes, 
-                                 class_names_list=None, parent_widget=None):
+                                 class_names_list=None, parent_widget=None, language="pt"):
         """
         INTERACTIVE labeling usando Qt Dialog.
         pca_2d MUST be computed from DEEP FEATURES (InceptionV3), not manual features.
@@ -488,7 +516,7 @@ class SemiAutoLabeler:
 
             dialog = InteractiveLabelingDialog(
                 images, image_names, pca_2d, cls_name, cls,
-                self.n_examples, parent=parent_widget
+                self.n_examples, parent=parent_widget, language=language
             )
 
             result = dialog.exec()
@@ -496,13 +524,13 @@ class SemiAutoLabeler:
             if result == QDialog.DialogCode.Accepted and dialog.selected_indices:
                 for idx in dialog.selected_indices:
                     all_labels[idx] = cls
-                print(f"  '{cls_name}': {len(dialog.selected_indices)} examples selected by user")
+                print(_t("examples_selected_by_user", language, _tc(cls_name, language), len(dialog.selected_indices)))
             else:
                 auto = self._auto_select_uniform(pca_2d, images, cls,
                                                  exclude=list(all_labels.keys()))
                 for idx in auto[:self.n_examples]:
                     all_labels[idx] = cls
-                print(f"  '{cls_name}': {len(auto[:self.n_examples])} examples (auto-selected)")
+                print(_t("examples_auto_selected", language, _tc(cls_name, language), len(auto[:self.n_examples])))
 
         self.labels = all_labels
         return self.labels
@@ -534,10 +562,10 @@ class SemiAutoLabeler:
         This ensures expanded labels are consistent with what the CNN sees.
         """
         if self.deep_feature_extractor is None:
-            raise ValueError("Deep feature extractor not set. Call set_deep_feature_extractor() first.")
+            raise ValueError(_t("deep_feature_extractor_not_set", self.language))
 
         # Extract deep features for ALL images
-        print("  Extracting deep features for k-NN label expansion...")
+        print(_t("extracting_for_knn_expansion", self.language))
         deep_features = self.deep_feature_extractor.extract(images)
 
         # Scale deep features
@@ -610,7 +638,7 @@ class InteractiveLabelingDialog(QDialog):
     """Dialog for interactive selection of training examples per class."""
 
     def __init__(self, images, image_names, pca_2d, class_name, class_id,
-                 n_examples, parent=None):
+                 n_examples, parent=None, language="pt"):
         super().__init__(parent)
         self.images = images
         self.image_names = image_names
@@ -620,7 +648,7 @@ class InteractiveLabelingDialog(QDialog):
         self.n_examples = n_examples
         self.selected_indices = []
 
-        self.setWindowTitle(f"Selecionar exemplos: {class_name}")
+        self.setWindowTitle(_t("select_examples_title", self.language, _tc(class_name, self.language)))
         self.resize(900, 700)
 
         self._build_ui()
@@ -630,9 +658,9 @@ class InteractiveLabelingDialog(QDialog):
         layout = QVBoxLayout(self)
 
         self.instruction = QLabel(
-            f"<b>Clique nas imagens para selecionar exemplos de '{self.class_name}'</b><br>"
-            f"Selecionados: <span style='color: red;'>0/{self.n_examples}</span><br>"
-            f"<i>PCA calculado sobre deep features da InceptionV3 (2048 dims)</i>"
+            _t("click_images_select_examples", self.language, _tc(self.class_name, self.language)) + "<br>" +
+            _t("selected_count", self.language, 0, self.n_examples) + "<br>" +
+            "<i>" + _t("pca_deep_features_hint", self.language) + "</i>"
         )
         self.instruction.setWordWrap(True)
         layout.addWidget(self.instruction)
@@ -647,11 +675,11 @@ class InteractiveLabelingDialog(QDialog):
 
         btn_layout = QHBoxLayout()
 
-        self.auto_btn = QPushButton("Auto-selecionar")
-        self.auto_btn.setToolTip("Deixar o algoritmo escolher automaticamente")
+        self.auto_btn = QPushButton(_t("auto_select", self.language))
+        self.auto_btn.setToolTip(_t("auto_select_tooltip", self.language))
         self.auto_btn.clicked.connect(self._auto_select)
 
-        self.done_btn = QPushButton("Concluir")
+        self.done_btn = QPushButton(_t("done", self.language))
         self.done_btn.setEnabled(False)
         self.done_btn.clicked.connect(self.accept)
 
@@ -753,11 +781,12 @@ class InteractiveLabelingDialog(QDialog):
 
         count = len(self.selected_indices)
         color = 'green' if count >= self.n_examples else 'red'
+        ready_text = _t("ready_to_finish", self.language) if count >= self.n_examples else _t("continue_selecting", self.language)
         self.instruction.setText(
-            f"<b>Clique nas imagens para selecionar exemplos de '{self.class_name}'</b><br>"
-            f"Selecionados: <span style='color: {color};'>{count}/{self.n_examples}</span><br>"
-            f"<i>PCA calculado sobre deep features da InceptionV3 (2048 dims)</i><br>"
-            f"{'✓ Pronto para concluir!' if count >= self.n_examples else 'Continue selecionando...'}"
+            _t("click_images_select_examples", self.language, _tc(self.class_name, self.language)) + "<br>" +
+            _t("selected_count", self.language, count, self.n_examples) + "<br>" +
+            "<i>" + _t("pca_deep_features_hint", self.language) + "</i><br>" +
+            ready_text
         )
 
         self.done_btn.setEnabled(count >= self.n_examples)
@@ -854,11 +883,11 @@ class FastInceptionV3Classifier:
         self.model = models.inception_v3(weights=models.Inception_V3_Weights.DEFAULT)
 
         if freeze_backbone:
-            print("  Freezing backbone (transfer learning)...")
+            print(_t("freezing_backbone", self.language))
             for param in self.model.parameters():
                 param.requires_grad = False
         else:
-            print("  Fine-tuning: unfreezing Mixed_7b and Mixed_7c...")
+            print(_t("unfreezing_layers", self.language))
             # Start frozen
             for param in self.model.parameters():
                 param.requires_grad = False
@@ -874,7 +903,7 @@ class FastInceptionV3Classifier:
         self.model = self.model.to(self.device)
 
     def train_phase(self, X_train, y_train, X_val, y_val, 
-                    epochs, lr, patience, freeze_backbone=True):
+                    epochs, lr, patience, freeze_backbone=True, progress_callback=None):
         """Train a single phase with early stopping."""
         self._build_model(freeze_backbone=freeze_backbone)
 
@@ -898,7 +927,7 @@ class FastInceptionV3Classifier:
             total / (self.n_classes * counts.get(c, 1))
             for c in range(self.n_classes)
         ], dtype=torch.float32).to(self.device)
-        print(f"  Class weights: {weights.cpu().numpy()}")
+        print(_t("class_weights", self.language, weights.cpu().numpy()))
 
         criterion = nn.CrossEntropyLoss(weight=weights)
 
@@ -921,6 +950,9 @@ class FastInceptionV3Classifier:
         best_state = None
 
         for epoch in range(epochs):
+            if progress_callback:
+                progress_callback(epoch + 1, epochs)
+
             # Training
             self.model.train()
             train_loss, train_correct, train_total = 0, 0, 0
@@ -978,11 +1010,9 @@ class FastInceptionV3Classifier:
             val_dist = Counter(val_preds)
             true_dist = Counter(val_true)
 
-            print(f"  Epoch {epoch+1}/{epochs} | "
-                  f"Loss: {train_loss/train_total:.4f} | "
-                  f"Train: {train_acc:.3f} | Val: {val_acc:.3f}")
-            print(f"    Val PREDICTED: {dict(val_dist)}")
-            print(f"    Val TRUE:      {dict(true_dist)}")
+            print(_t("epoch_stats", self.language, epoch+1, epochs, train_loss/train_total, train_acc, val_acc))
+            print(_t("val_predicted", self.language, dict(val_dist)))
+            print(_t("val_true", self.language, dict(true_dist)))
 
             scheduler.step(val_acc)
 
@@ -990,60 +1020,75 @@ class FastInceptionV3Classifier:
                 best_val_acc = val_acc
                 epochs_no_improve = 0
                 best_state = {k: v.cpu().clone() for k, v in self.model.state_dict().items()}
-                print(f"    -> New best val_acc: {val_acc:.3f}")
+                print(_t("new_best_val_acc", self.language, val_acc))
             else:
                 epochs_no_improve += 1
                 if epochs_no_improve >= patience:
-                    print(f"    -> Early stopping at epoch {epoch+1}")
+                    print(_t("early_stopping_epoch", self.language, epoch+1))
                     break
 
         # Restore best weights
         if best_state is not None:
             self.model.load_state_dict(best_state)
 
-        print(f"  Best validation accuracy: {best_val_acc:.3f}")
+        print(_t("best_val_accuracy", self.language, best_val_acc))
         return best_val_acc
 
-    def train_two_phase(self, X_train, y_train, X_val, y_val):
+    def train_two_phase(self, X_train, y_train, X_val, y_val, progress_callback=None):
         """
         Two-phase training:
         Phase 1: Transfer learning (frozen backbone, 5 epochs, lr=0.001)
         Phase 2: Fine-tuning (unfreeze 7b+7c, 8 epochs, lr=0.0001)
         """
         print(f"\n{'='*60}")
-        print("PHASE 1: Transfer Learning (frozen backbone)")
+        print(_t("phase1_transfer_learning", self.language))
         print(f"{'='*60}")
-        print(f"  Training: {len(X_train)} samples")
-        print(f"  Validation: {len(X_val)} samples")
+        print(_t("training_samples", self.language, len(X_train)))
+        print(_t("validation_samples", self.language, len(X_val)))
+
+        def _phase1_progress(epoch, total):
+            if progress_callback:
+                # Phase 1 = 5 epochs, map to 60-75%
+                pct = 60 + int((epoch / total) * 15)
+                progress_callback(_t("training_phase1_frozen", self.language), pct)
 
         val_acc_1 = self.train_phase(
             X_train, y_train, X_val, y_val,
-            epochs=5, lr=0.001, patience=2, freeze_backbone=True
+            epochs=5, lr=0.001, patience=2, freeze_backbone=True,
+            progress_callback=_phase1_progress
         )
 
         # Save phase 1 weights
         phase1_state = {k: v.cpu().clone() for k, v in self.model.state_dict().items()}
 
         print(f"\n{'='*60}")
-        print("PHASE 2: Fine-tuning (Mixed_7b + Mixed_7c)")
+        print(_t("phase2_fine_tuning", self.language))
         print(f"{'='*60}")
 
         # Rebuild with unfrozen layers, load phase 1 weights
         self._build_model(freeze_backbone=False)
         self.model.load_state_dict(phase1_state)
 
+        def _phase2_progress(epoch, total):
+            if progress_callback:
+                # Phase 2 = 8 epochs, map to 75-90%
+                pct = 75 + int((epoch / total) * 15)
+                progress_callback(_t("training_phase2_finetune", self.language), pct)
+
         val_acc_2 = self.train_phase(
             X_train, y_train, X_val, y_val,
-            epochs=8, lr=0.0001, patience=3, freeze_backbone=False
+            epochs=8, lr=0.0001, patience=3, freeze_backbone=False,
+            progress_callback=_phase2_progress
         )
 
         print(f"\n{'='*60}")
-        print(f"FINAL: Phase 1 val_acc={val_acc_1:.3f}, Phase 2 val_acc={val_acc_2:.3f}")
+        print(_t("final_results", self.language, val_acc_1, val_acc_2))
         print(f"{'='*60}")
 
         # Save best model
-        torch.save(self.model.state_dict(), "best_model_fast.pth")
-        print("  Model saved to best_model_fast.pth")
+        best_path = Path("best_model_fast.pth").resolve()
+        torch.save(self.model.state_dict(), str(best_path))
+        print(_t("model_state_dict_saved", self.language, best_path))
 
     def predict(self, images, batch_size=64):
         self.model.eval()
@@ -1099,10 +1144,10 @@ class FastInceptionV3Classifier:
 
 
 # =============================================================================
-# HIERARCHICAL CLASSIFIER (Entropy + CNN ensemble)
+# ADAPTIVE ENSEMBLE CLASSIFIER (Entropy + CNN Fusion)
 # =============================================================================
 
-class HierarchicalClassifier:
+class AdaptiveEnsembleClassifier:
     """
     Combina EntropyClassifier + CNNClassifier com pesos adaptativos.
     Quanto mais próximo da fronteira de entropia, mais confia no CNN.
@@ -1169,7 +1214,7 @@ class SeafloorClassifier:
     Classes fixas (atalhos de teclado):
         S → Sedimento
         F → Coral_Fragmento  
-        R → Coral_Vivo
+        R → Recife_Coral 
 
     Classes customizadas (atalhos numéricos):
         1, 2, 3... 9, 0 → adicionadas pelo usuário via menu
@@ -1178,13 +1223,13 @@ class SeafloorClassifier:
     FIXED_CLASSES = {
         "S": "Sedimento",
         "F": "Coral_Fragmento", 
-        "R": "Coral_Vivo"
+        "R": "Recife_Coral"
     }
 
     FIXED_COLORS = {
         "Sedimento": "#8B4513",
         "Coral_Fragmento": "#FF8C00",
-        "Coral_Vivo": "#00CED1"
+        "Recife_Coral": "#00CED1"
     }
 
     CUSTOM_SHORTCUTS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]
@@ -1195,10 +1240,11 @@ class SeafloorClassifier:
                  fast_mode=True, output_dir="seafloor_output",
                  crop_to_299=True,
                  crop_ratio=0.85,
-                 use_hierarchical=False,
+                 use_adaptive_ensemble=False,
                  entropy_margin=0.3,
                  custom_classes=None,
-                 custom_colors=None):
+                 custom_colors=None,
+                 language="pt"):
 
         # Inicializar classes fixas
         self.fixed_class_names = list(self.FIXED_CLASSES.values())
@@ -1231,8 +1277,9 @@ class SeafloorClassifier:
         self.crop_to_299 = crop_to_299
         self.crop_ratio = crop_ratio
         self.cropper = CenterCropTo299(crop_ratio=crop_ratio) if crop_to_299 else None
-        self.use_hierarchical = use_hierarchical
+        self.use_adaptive_ensemble = use_adaptive_ensemble
         self.entropy_margin = entropy_margin
+        self.language = language
 
         self.normalizer = None
         if self.normalize_colors:
@@ -1251,7 +1298,7 @@ class SeafloorClassifier:
             thresholds=(6.471, 6.980),
             class_names=self.class_names
         )
-        self.hierarchical_classifier = None
+        self.adaptive_ensemble = None
 
         # Criar diretórios
         self.output_dir.mkdir(exist_ok=True)
@@ -1289,10 +1336,10 @@ class SeafloorClassifier:
 
     def add_custom_class(self, name, color=None):
         if name in self.class_names:
-            return False, None, f"Classe '{name}' já existe!"
+            return False, None, _t("seafloor_class_exists", self.language, name)
         available = [s for s in self.CUSTOM_SHORTCUTS if s not in self.custom_classes]
         if not available:
-            return False, None, "Limite de 10 classes customizadas atingido!"
+            return False, None, _t("seafloor_max_custom", self.language)
         shortcut = available[0]
         self.custom_classes[shortcut] = name
         self.custom_colors[name] = color if color else self._generate_color(name)
@@ -1301,14 +1348,14 @@ class SeafloorClassifier:
         self.n_clusters = len(self.class_names)
         self.entropy_classifier.class_names = self.class_names
         self._refresh_cluster_dirs()
-        return True, shortcut, f"Classe '{name}' adicionada com atalho '{shortcut}'"
+        return True, shortcut, _t("category_added_with_shortcut", self.language, name, shortcut)
 
     def remove_custom_class(self, name_or_shortcut):
         name = name_or_shortcut
         if name_or_shortcut in self.custom_classes:
             name = self.custom_classes[name_or_shortcut]
         if name not in self.custom_classes.values():
-            return False, f"Classe '{name}' não encontrada ou é fixa"
+            return False, _t("class_not_found_or_fixed", self.language, name)
         shortcut_to_remove = None
         for s, n in self.custom_classes.items():
             if n == name:
@@ -1321,7 +1368,7 @@ class SeafloorClassifier:
         self.n_clusters = len(self.class_names)
         self.entropy_classifier.class_names = self.class_names
         self._reorganize_shortcuts()
-        return True, f"Classe '{name}' removida"
+        return True, _t("category_removed", self.language, name)
 
     def _reorganize_shortcuts(self):
         classes = list(self.custom_classes.values())
@@ -1336,12 +1383,14 @@ class SeafloorClassifier:
         result = []
         for shortcut, name in self.FIXED_CLASSES.items():
             result.append({
-                "shortcut": shortcut, "name": name,
+                "shortcut": shortcut, "name": _tc(name, self.language),
+                "internal_name": name,
                 "color": self.fixed_colors[name], "type": "fixed"
             })
         for shortcut, name in self.custom_classes.items():
             result.append({
-                "shortcut": shortcut, "name": name,
+                "shortcut": shortcut, "name": _tc(name, self.language),
+                "internal_name": name,
                 "color": self.custom_colors.get(name, "#808080"), "type": "custom"
             })
         return result
@@ -1358,7 +1407,7 @@ class SeafloorClassifier:
             "crop_to_299": self.crop_to_299,
             "crop_ratio": self.crop_ratio,
             "normalize_colors": self.normalize_colors,
-            "use_hierarchical": self.use_hierarchical
+            "use_adaptive_ensemble": self.use_adaptive_ensemble
         }
         path = path or (self.output_dir / "classifier_config.json")
         with open(path, 'w', encoding='utf-8') as f:
@@ -1382,11 +1431,11 @@ class SeafloorClassifier:
         image_paths = []
         for ext in ["*.jpg", "*.jpeg", "*.png", "*.bmp", "*.tif", "*.tiff"]:
             image_paths.extend(folder.glob(ext))
-            image_paths.extend(folder.glob(ext.upper()))
 
-        image_paths = sorted(image_paths)
+        # Deduplicar (evita duplicatas em sistemas case-insensitive como Windows)
+        image_paths = sorted(set(image_paths))
         if not image_paths:
-            raise ValueError(f"Nenhuma imagem encontrada em: {folder_path}")
+            raise ValueError(_t("no_images_found_in_folder", self.language, folder_path))
 
         images_raw = []
         images_rgb = []
@@ -1401,14 +1450,14 @@ class SeafloorClassifier:
             image_names.append(p.name)
 
         if not images_raw:
-            raise ValueError(f"Nenhuma imagem válida carregada de: {folder_path}")
+            raise ValueError(_t("no_valid_images_loaded", self.language, folder_path))
 
-        print(f"  Carregadas {len(images_raw)} imagens de {folder_path}")
+        print(_t("loaded_images_from", self.language, len(images_raw), folder_path))
         return images_raw, images_rgb, image_names
 
     def save_model(self, path=None):
         if self.trained_classifier is None:
-            raise ValueError("Nenhum modelo treinado para salvar!")
+            raise ValueError(_t("no_trained_model_to_save", self.language))
         path = Path(path) if path else (self.output_dir / "seafloor_model.pt")
         path.parent.mkdir(parents=True, exist_ok=True)
         checkpoint = {
@@ -1424,20 +1473,20 @@ class SeafloorClassifier:
             "crop_to_299": self.crop_to_299,
             "crop_ratio": self.crop_ratio,
             "normalize_colors": self.normalize_colors,
-            "use_hierarchical": self.use_hierarchical,
+            "use_adaptive_ensemble": self.use_adaptive_ensemble,
             "entropy_margin": self.entropy_margin,
             "ref_mean": self.normalizer.ref_mean.tolist() if (self.normalizer and self.normalizer.ref_mean is not None) else None,
             "ref_std": self.normalizer.ref_std.tolist() if (self.normalizer and self.normalizer.ref_std is not None) else None,
             "reference_path": str(self.normalizer.reference_path) if self.normalizer else None,
         }
         torch.save(checkpoint, str(path))
-        print(f"  Modelo salvo em: {path}")
+        print(_t("model_saved_to_path", self.language, path))
         return str(path)
 
     def load_model(self, path):
         path = Path(path)
         if not path.exists():
-            raise FileNotFoundError(f"Modelo não encontrado: {path}")
+            raise FileNotFoundError(_t("model_not_found", self.language, path))
         checkpoint = torch.load(str(path), map_location="cpu", weights_only=True)
         self.class_names = checkpoint.get("class_names", self.class_names)
         self.class_colors = checkpoint.get("class_colors", self.class_colors)
@@ -1449,7 +1498,7 @@ class SeafloorClassifier:
         self.crop_to_299 = checkpoint.get("crop_to_299", self.crop_to_299)
         self.crop_ratio = checkpoint.get("crop_ratio", self.crop_ratio)
         self.normalize_colors = checkpoint.get("normalize_colors", self.normalize_colors)
-        self.use_hierarchical = checkpoint.get("use_hierarchical", self.use_hierarchical)
+        self.use_adaptive_ensemble = checkpoint.get("use_adaptive_ensemble", self.use_adaptive_ensemble)
         self.entropy_margin = checkpoint.get("entropy_margin", self.entropy_margin)
         ref_mean = checkpoint.get("ref_mean")
         ref_std = checkpoint.get("ref_std")
@@ -1466,8 +1515,8 @@ class SeafloorClassifier:
         self.trained_classifier.model.load_state_dict(checkpoint["model_state_dict"])
         self.trained_classifier.model.eval()
         self.entropy_classifier.class_names = self.class_names
-        print(f"  Modelo carregado de: {path}")
-        print(f"  Classes: {self.class_names}")
+        print(_t("model_loaded_from", self.language, path))
+        print(_t("classes_list", self.language, [_tc(n, self.language) for n in self.class_names]))
         return True
 
     def has_trained_model(self):
@@ -1475,7 +1524,7 @@ class SeafloorClassifier:
 
     def predict_single_frame(self, frame_bgr):
         if self.trained_classifier is None:
-            raise ValueError("Classifier not trained yet!")
+            raise ValueError(_t("classifier_not_trained", self.language))
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         if self.crop_to_299 and self.cropper is not None:
             cropped, _ = self.cropper.crop(frame_bgr)
@@ -1492,7 +1541,7 @@ class SeafloorClassifier:
         class_name = self.class_names[class_id]
         return {
             "class_id": class_id,
-            "class_name": class_name,
+            "class_name": _tc(class_name, self.language),
             "confidence": confidence,
             "color": self.class_colors.get(class_name, "#FFFFFF"),
             "shortcut": self.get_shortcut_for_class(class_name)
@@ -1504,7 +1553,8 @@ class SeafloorClassifier:
     # =====================================================================
 
     def classify_images(self, images_rgb, images_raw, image_names, folder_path=None,
-                         parent_widget=None):
+                         parent_widget=None, progress_callback=None, status_callback=None,
+                         skip_labeling=False):
         """
         Run full classification workflow WITH CRITICAL FIXES:
         1. PCA uses DEEP FEATURES (InceptionV3, 2048-dim)
@@ -1513,54 +1563,70 @@ class SeafloorClassifier:
         4. 2-phase training: 5 epochs (frozen) + 8 epochs (fine-tune)
         """
 
-        # ===== Step 1: Extract DEEP FEATURES for PCA (CRITICAL FIX) =====
-        print("\n" + "="*60)
-        print("STEP 1: Extracting DEEP FEATURES for PCA visualization")
-        print("="*60)
-        print("  Using InceptionV3 avg_pool (2048 dimensions)")
-        print("  This ensures user selection reflects what the CNN sees.")
+        def _status(msg):
+            ts = datetime.now().strftime("%H:%M:%S")
+            full = f"[{ts}] {msg}"
+            print(full)
+            if status_callback:
+                status_callback(full)
 
-        deep_features = self.deep_feature_extractor.extract(images_rgb)
-        print(f"  Deep features shape: {deep_features.shape}")
+        def _progress(msg, pct):
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg} ({pct}%)")
+            if progress_callback:
+                progress_callback(msg, pct)
 
-        # Scale and reduce for PCA visualization
-        scaler = StandardScaler()
-        deep_scaled = scaler.fit_transform(deep_features)
-        pca_2d = PCA(n_components=2).fit_transform(deep_scaled)
-        pca_obj = PCA(n_components=2).fit(deep_scaled)
-        print(f"  PCA explained variance: {pca_obj.explained_variance_ratio_}")
+        if not skip_labeling:
+            # ===== Step 1: Extract DEEP FEATURES for PCA (CRITICAL FIX) =====
+            _status(_t("step1_extracting_deep_features", self.language))
+            print(_t("using_inceptionv3", self.language))
+            print(_t("cnn_sees_hint", self.language))
 
-        # ===== Step 2: INTERACTIVE labeling via Qt Dialog =====
-        print("\n" + "="*60)
-        print("STEP 2: Interactive labeling (PCA from DEEP FEATURES)")
-        print("="*60)
+            def feat_progress(pct):
+                _progress(_t("deep_features_progress", self.language), pct)
 
-        self.labeler.interactive_labeling_qt(
-            images_rgb, image_names, pca_2d,
-            self.n_clusters, self.class_names,
-            parent_widget=parent_widget
-        )
+            deep_features = self.deep_feature_extractor.extract(images_rgb, progress_callback=feat_progress)
+            print(_t("deep_features_shape", self.language, deep_features.shape))
 
-        # ===== Step 3: EXPAND labels with k-NN in DEEP FEATURE space =====
-        print("\n" + "="*60)
-        print("STEP 3: Expanding labels with k-NN (DEEP FEATURES)")
-        print("="*60)
-        self.labeler.expand_labels_nearest_neighbors(images_rgb, n_neighbors=50)
+            # Scale and reduce for PCA visualization
+            scaler = StandardScaler()
+            deep_scaled = scaler.fit_transform(deep_features)
+            pca_2d = PCA(n_components=2).fit_transform(deep_scaled)
+            pca_obj = PCA(n_components=2).fit(deep_scaled)
+            print(_t("pca_explained_variance", self.language, pca_obj.explained_variance_ratio_))
 
-        n_labeled = len(self.labeler.labels)
-        print(f"  Total labeled after expansion: {n_labeled}/{len(images_rgb)}")
+            # ===== Step 2: INTERACTIVE labeling via Qt Dialog =====
+            _status(_t("step2_interactive_labeling", self.language))
+            _progress("Interactive labeling", 20)
+
+            self.labeler.interactive_labeling_qt(
+                images_rgb, image_names, pca_2d,
+                self.n_clusters, self.class_names,
+                parent_widget=parent_widget
+            )
+
+            # ===== Step 3: EXPAND labels with k-NN in DEEP FEATURE space =====
+            _status(_t("step3_expanding_labels", self.language))
+            _progress(_t("knn_expansion_progress", self.language), 30)
+            self.labeler.expand_labels_nearest_neighbors(images_rgb, n_neighbors=50)
+
+            n_labeled = len(self.labeler.labels)
+            print(_t("total_labeled_after_expansion", self.language, n_labeled, len(images_rgb)))
+        else:
+            _status(_t("step1_3_skipped", self.language))
+            _progress(_t("labels_ready_progress", self.language), 30)
+            n_labeled = len(self.labeler.labels)
+            print(_t("using_preexisting_labels", self.language, n_labeled))
 
         # ===== Step 4: CROP to 299×299 =====
-        print("\n" + "="*60)
-        print("STEP 4: Cropping to 299×299")
-        print("="*60)
+        _status("STEP 4: Cropping to 299×299")
+        _progress("Cropping", 35)
 
         if self.crop_to_299 and self.cropper is not None:
             cropped_raw, crop_infos = self.cropper.crop_batch(images_raw, image_names)
             cropped_rgb = [cv2.cvtColor(img, cv2.COLOR_BGR2RGB) for img in cropped_raw]
 
             methods = Counter([info['method'] for info in crop_infos])
-            print(f"  Methods: {dict(methods)}")
+            print(_t("methods", self.language, dict(methods)))
 
             for img, name in zip(cropped_raw, image_names):
                 out_path = self.output_dir / "cropped" / f"crop_{name}"
@@ -1573,9 +1639,8 @@ class SeafloorClassifier:
             images_cropped_rgb = images_rgb
 
         # ===== Step 5: Color normalization =====
-        print("\n" + "="*60)
-        print("STEP 5: Color normalization")
-        print("="*60)
+        _status(_t("step5_color_normalization", self.language))
+        _progress(_t("color_norm_progress", self.language), 40)
 
         if self.normalize_colors and self.normalizer and folder_path:
             ref_img = self.normalizer.select_reference(image_names, folder_path)
@@ -1590,22 +1655,20 @@ class SeafloorClassifier:
             images_normalized_rgb = images_cropped_rgb
 
         # ===== Step 6: Get labeled data (NO augmentation yet!) =====
-        print("\n" + "="*60)
-        print("STEP 6: Preparing labeled data (NO augmentation yet)")
-        print("="*60)
+        _status(_t("step6_preparing_data", self.language))
+        _progress(_t("preparing_data_progress", self.language), 45)
 
         X_labeled, y_labeled, names_labeled = self.labeler.get_training_data(
             images_normalized_rgb, image_names
         )
 
-        print(f"  Labeled samples: {len(X_labeled)}")
-        print(f"  Class distribution: {dict(Counter(y_labeled))}")
+        print(_t("labeled_samples", self.language, len(X_labeled)))
+        print(_t("class_distribution", self.language, dict(Counter(y_labeled))))
 
         # ===== Step 7: STRATIFIED SPLIT (CRITICAL FIX - before augmentation!) =====
-        print("\n" + "="*60)
-        print("STEP 7: Stratified Train/Val/Test split (BEFORE augmentation)")
-        print("="*60)
-        print("  CRITICAL: Split happens BEFORE any augmentation to prevent data leakage!")
+        _status(_t("step7_stratified_split", self.language))
+        _progress(_t("split_progress", self.language), 50)
+        print(_t("critical_split_before_aug", self.language))
 
         # First split: separate test set (15%)
         X_temp, X_test, y_temp, y_test = train_test_split(
@@ -1623,17 +1686,16 @@ class SeafloorClassifier:
             random_state=42
         )
 
-        print(f"  Train: {len(X_train)} samples")
-        print(f"  Val:   {len(X_val)} samples")
-        print(f"  Test:  {len(X_test)} samples")
-        print(f"  Train distribution: {dict(Counter(y_train))}")
-        print(f"  Val distribution:   {dict(Counter(y_val))}")
-        print(f"  Test distribution:   {dict(Counter(y_test))}")
+        print(_t("train_samples", self.language, len(X_train)))
+        print(_t("val_samples", self.language, len(X_val)))
+        print(_t("test_samples", self.language, len(X_test)))
+        print(_t("train_distribution", self.language, dict(Counter(y_train))))
+        print(_t("val_distribution", self.language, dict(Counter(y_val))))
+        print(_t("test_distribution", self.language, dict(Counter(y_test))))
 
         # ===== Step 8: Balance training set with augmentation (ONLY train!) =====
-        print("\n" + "="*60)
-        print("STEP 8: Balancing training set with augmentation (TRAIN ONLY)")
-        print("="*60)
+        _status(_t("step8_balancing", self.language))
+        _progress(_t("data_aug_progress", self.language), 55)
 
         if self.use_augmentation:
             X_train_bal, y_train_bal = balance_classes_by_augmentation(
@@ -1642,60 +1704,55 @@ class SeafloorClassifier:
         else:
             X_train_bal, y_train_bal = X_train, y_train
 
-        print(f"  After balancing: {len(X_train_bal)} samples")
-        print(f"  Balanced distribution: {dict(Counter(y_train_bal))}")
+        print(_t("after_balancing", self.language, len(X_train_bal)))
+        print(_t("balanced_distribution", self.language, dict(Counter(y_train_bal))))
 
         # ===== Step 9: Train classifier with 2-phase approach =====
-        print("\n" + "="*60)
-        print("STEP 9: Training classifier (2-phase)")
-        print("="*60)
+        _status(_t("step9_training", self.language))
+        _progress(_t("training_progress", self.language), 60)
 
         n_classes = len(np.unique(y_train_bal))
 
         classifier = FastInceptionV3Classifier(n_classes=n_classes)
-        classifier.train_two_phase(X_train_bal, y_train_bal, X_val, y_val)
+        classifier.train_two_phase(X_train_bal, y_train_bal, X_val, y_val, 
+                                    progress_callback=_progress)
 
         self.trained_classifier = classifier
 
         # ===== Step 10: Evaluate on TEST set (never seen before!) =====
-        print("\n" + "="*60)
-        print("STEP 10: Evaluating on TEST set (unseen data)")
-        print("="*60)
+        _status(_t("step10_evaluating", self.language))
+        _progress(_t("evaluation_progress", self.language), 90)
 
         test_preds, test_confs = classifier.predict(X_test, batch_size=64)
         test_acc = np.mean(test_preds == y_test)
-        print(f"  Test accuracy: {test_acc:.3f}")
-        print(f"  Test confusion (pred vs true):")
-        print(f"    Predicted: {dict(Counter(test_preds))}")
-        print(f"    True:      {dict(Counter(y_test))}")
+        print(_t("test_accuracy", self.language, test_acc))
+        print(_t("test_confusion", self.language))
+        print(_t("predicted", self.language, dict(Counter(test_preds))))
+        print(_t("true", self.language, dict(Counter(y_test))))
 
         # ===== Step 11: Predict on ALL images =====
-        print("\n" + "="*60)
-        print("STEP 11: Predicting on all images")
-        print("="*60)
+        _status(_t("step11_predicting", self.language))
+        _progress(_t("prediction_progress", self.language), 92)
 
         supervised_preds, confidences = classifier.predict(
             images_normalized_rgb, batch_size=64
         )
 
         # ===== Step 12: Unsupervised clustering (for comparison) =====
-        print("\n" + "="*60)
-        print("STEP 12: Unsupervised clustering")
-        print("="*60)
+        _status(_t("step12_clustering", self.language))
+        _progress(_t("clustering_progress", self.language), 95)
 
         unsupervised_preds = self._run_unsupervised(images_normalized_rgb)
 
         # ===== Step 13: Comparison =====
-        print("\n" + "="*60)
-        print("STEP 13: Comparing methods")
-        print("="*60)
+        _status(_t("step13_comparing", self.language))
+        _progress(_t("comparison_progress", self.language), 97)
 
         self._compare_methods(supervised_preds, unsupervised_preds, confidences)
 
         # ===== Step 14: Save ORIGINAL images to result folders =====
-        print("\n" + "="*60)
-        print("STEP 14: Saving results")
-        print("="*60)
+        _status(_t("step14_saving", self.language))
+        _progress(_t("saving_progress", self.language), 98)
 
         for i, name in enumerate(image_names):
             dst = self.output_dir / "supervised" / f"class{supervised_preds[i]}" / name
@@ -1706,18 +1763,29 @@ class SeafloorClassifier:
             cv2.imwrite(str(dst), images_raw[i])
 
         # ===== Step 15: Visualizations =====
-        print("\n" + "="*60)
-        print("STEP 15: Generating visualizations")
-        print("="*60)
+        _status(_t("step15_visualizations", self.language))
+        _progress(_t("visualizations_progress", self.language), 99)
 
         self._visualize_pca_supervised(images_normalized_rgb, supervised_preds, confidences)
         self._visualize_pca_unsupervised(images_normalized_rgb, unsupervised_preds)
 
+        # Salvar modelo treinado com metadados completos
+        _status(_t("saving_trained_model", self.language))
+        try:
+            model_path = self.save_model()
+            config_path = self.save_config()
+            _status(_t("model_saved_success", self.language, model_path))
+            _status(_t("config_saved_success", self.language, config_path))
+        except Exception as e:
+            _status(_t("error_saving_model", self.language, e))
+
+        _status(_t("classification_complete", self.language))
+        _progress(_t("done_progress", self.language), 100)
         return supervised_preds, unsupervised_preds, confidences
 
     def _run_unsupervised(self, images_normalized_rgb):
         """Unsupervised clustering com InceptionV3 deep features."""
-        print("  Extracting deep features for clustering...")
+        print(_t("extracting_for_clustering", self.language))
         cnn_features = self.deep_feature_extractor.extract(images_normalized_rgb)
 
         scaler = StandardScaler()
@@ -1737,18 +1805,18 @@ class SeafloorClassifier:
             for r, c in zip(row_ind, col_ind):
                 mapped[unsupervised == c] = r
             kappa = cohen_kappa_score(supervised, mapped)
-            print(f"\nCohen's Kappa: {kappa:.3f}")
+            print(_t("cohens_kappa", self.language, kappa))
 
-        print(f"Confidence > 0.6: {np.mean(confidences > 0.6):.1%}")
-        print("\nSupervised distribution:", Counter(supervised))
-        print("Unsupervised distribution:", Counter(unsupervised))
+        print(_t("confidence_above_06", self.language, np.mean(confidences > 0.6)))
+        print(_t("supervised_distribution", self.language), Counter(supervised))
+        print(_t("unsupervised_distribution", self.language), Counter(unsupervised))
 
     def _visualize_pca_supervised(self, images, predictions, confidences):
         """Visualização PCA supervisionada com deep features."""
         if self.trained_classifier is None:
             return
 
-        print("  Extracting deep features for PCA visualization...")
+        print(_t("extracting_for_pca_viz", self.language))
         trained_features = self.trained_classifier.extract_features(images, batch_size=64)
         scaled = StandardScaler().fit_transform(trained_features)
         pca = PCA(n_components=2)
@@ -1775,7 +1843,7 @@ class SeafloorClassifier:
             mask = predictions == i
             n_points = np.sum(mask)
             if n_points > 0:
-                cls_name = self.class_names[i] if i < len(self.class_names) else f"Class_{i}"
+                cls_name = _tc(self.class_names[i], self.language) if i < len(self.class_names) else f"Class_{i}"
                 ax.scatter(pca_2d[mask, 0], pca_2d[mask, 1],
                         c=colors_list[i % len(colors_list)],
                         s=80, alpha=0.6, edgecolors='black', linewidth=0.8,
@@ -1785,7 +1853,7 @@ class SeafloorClassifier:
         for i in range(self.n_clusters):
             mask = predictions == i
             if np.sum(mask) > 0:
-                cls_name = self.class_names[i] if i < len(self.class_names) else f"Class_{i}"
+                cls_name = _tc(self.class_names[i], self.language) if i < len(self.class_names) else f"Class_{i}"
                 avg_conf = np.mean(confidences[mask])
                 info_text += f"{cls_name}: avg conf={avg_conf:.2f}\n"
 
@@ -1805,11 +1873,11 @@ class SeafloorClassifier:
         out = self.output_dir / "pca_plots" / "pca_supervised_trained.png"
         plt.savefig(out, dpi=200, bbox_inches='tight')
         plt.close()
-        print(f"  Saved: {out}")
+        print(_t("saved_to", self.language, out))
 
     def _visualize_pca_unsupervised(self, images, predictions):
         """Visualização PCA não-supervisionada com deep features."""
-        print("  Extracting deep features for unsupervised PCA...")
+        print(_t("extracting_for_unsupervised_pca", self.language))
         cnn_features = self.deep_feature_extractor.extract(images)
 
         scaler = StandardScaler()
@@ -1856,7 +1924,7 @@ class SeafloorClassifier:
         out = self.output_dir / "pca_plots" / "pca_unsupervised.png"
         plt.savefig(out, dpi=200, bbox_inches='tight')
         plt.close()
-        print(f"  Saved: {out}")
+        print(_t("saved_to", self.language, out))
 
 
     # =====================================================================
@@ -1871,17 +1939,14 @@ class SeafloorClassifier:
         """
         data_dir = Path(data_dir)
         if not data_dir.exists():
-            raise ValueError(f"Diretório não encontrado: {data_dir}")
+            raise ValueError(_t("directory_not_found", self.language, data_dir))
 
         # Descobrir classes a partir das subpastas
         class_dirs = [d for d in data_dir.iterdir()
                       if d.is_dir() and any(d.glob("*.jpg"))]
 
         if len(class_dirs) < 2:
-            raise ValueError(
-                f"São necessárias pelo menos 2 classes com imagens. "
-                f"Encontradas: {len(class_dirs)}"
-            )
+            raise ValueError(_t("min_2_classes_required", self.language, len(class_dirs)))
 
         # Atualizar classes do classificador
         class_names_from_dirs = sorted([d.name for d in class_dirs])
@@ -1908,7 +1973,7 @@ class SeafloorClassifier:
         image_names = []
         labels = []
 
-        print(f"\n--- Carregando dados de treinamento ---")
+        print("\n--- " + _t("loading_training_data", self.language) + " ---")
         for class_id, class_name in enumerate(self.class_names):
             class_dir = data_dir / class_name
             if not class_dir.exists():
@@ -1919,7 +1984,7 @@ class SeafloorClassifier:
                 class_images.extend(class_dir.glob(ext))
 
             if len(class_images) < min_samples_per_class:
-                print(f"  AVISO: Classe '{class_name}' tem apenas {len(class_images)} imagens")
+                print(_t("warning_class_few_images", self.language, class_name, len(class_images)))
 
             for img_path in sorted(class_images):
                 img = cv2.imread(str(img_path))
@@ -1931,9 +1996,9 @@ class SeafloorClassifier:
                 labels.append(class_id)
 
         if len(images_raw) < min_samples_per_class * 2:
-            raise ValueError(f"Dados insuficientes: apenas {len(images_raw)} imagens totais")
+            raise ValueError(_t("insufficient_data_total", self.language, len(images_raw)))
 
-        print(f"  Total: {len(images_raw)} imagens, classes: {self.class_names}")
+        print(_t("total_images_classes", self.language, len(images_raw), [_tc(n, self.language) for n in self.class_names]))
 
         labels = np.array(labels)
 
@@ -1979,10 +2044,13 @@ class SeafloorClassificationThread(QThread):
         self.mutex = QMutex()
         self.condition = QWaitCondition()
         self._interactive_result = None
-        self.labeling_result_ready.connect(self._on_labeling_result)
+        # NÃO usar sinal/slot cross-thread — usamos chamada direta thread-safe via set_labeling_result
 
-    def _on_labeling_result(self, labels):
-        self._interactive_result = labels
+    def set_labeling_result(self, labels):
+        """Thread-safe: chamado pela UI thread para entregar o resultado do labeling."""
+        with QMutexLocker(self.mutex):
+            self._interactive_result = labels
+            self.condition.wakeOne()
 
     def add_frame(self, frame_bgr, frame_num):
         with QMutexLocker(self.mutex):
@@ -2009,20 +2077,28 @@ class SeafloorClassificationThread(QThread):
 
     def _run_batch(self):
         try:
-            self.status.emit("Carregando imagens...")
+            self.progress.emit(0)
+            self.status.emit(_t("loading_images", self.language))
             images_raw, images_rgb, image_names = self.classifier.load_images_from_folder(
                 self.batch_folder
             )
 
-            self.status.emit("Extraindo deep features para PCA...")
+            self.progress.emit(5)
+            self.status.emit(_t("extracting_deep_features_pca", self.language))
 
             # REVISED: Use deep features for PCA
-            deep_features = self.classifier.deep_feature_extractor.extract(images_rgb)
+            def feat_progress(pct):
+                self.progress.emit(5 + int(pct * 0.10))
+
+            deep_features = self.classifier.deep_feature_extractor.extract(
+                images_rgb, progress_callback=feat_progress
+            )
             scaler = StandardScaler()
             deep_scaled = scaler.fit_transform(deep_features)
             pca_2d = PCA(n_components=2).fit_transform(deep_scaled)
 
-            self.status.emit("Aguardando seleção do usuário...")
+            self.progress.emit(15)
+            self.status.emit(_t("waiting_user_selection", self.language))
             self._interactive_result = None
 
             self.request_interactive_labeling.emit(
@@ -2030,42 +2106,67 @@ class SeafloorClassificationThread(QThread):
                 self.classifier.n_clusters, self.classifier.class_names
             )
 
-            import time
-            for _ in range(300):
-                if self._interactive_result is not None:
-                    break
-                time.sleep(0.1)
+            # Espera thread-safe pela resposta do labeling (UI thread chama set_labeling_result)
+            with QMutexLocker(self.mutex):
+                while self._interactive_result is None and self.running:
+                    self.condition.wait(self.mutex, 100)  # 100ms timeout para checar self.running
+
+            if not self.running:
+                self.finished_signal.emit(False, None, _t("cancelled_by_user", self.language))
+                return
 
             if self._interactive_result is None:
-                self.finished_signal.emit(False, None, "Timeout aguardando seleção")
+                self.finished_signal.emit(False, None, _t("timeout_waiting_selection", self.language))
                 return
 
             self.classifier.labeler.labels = self._interactive_result
 
             # REVISED: Expand with deep features
-            self.status.emit("Expandindo labels com deep features (k-NN)...")
+            self.status.emit(_t("expanding_labels_knn", self.language))
+            self.progress.emit(25)
             self.classifier.labeler.expand_labels_nearest_neighbors(images_rgb, n_neighbors=50)
 
-            self.status.emit("Treinando classificador...")
+            self.status.emit(_t("running_full_classification", self.language))
+            self.progress.emit(30)
+
+            def on_progress(msg, pct):
+                self.status.emit(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
+                self.progress.emit(pct)
+
+            def on_status(msg):
+                self.status.emit(msg)
+
+            supervised_preds, unsupervised_preds, confidences = self.classifier.classify_images(
+                images_rgb, images_raw, image_names,
+                folder_path=self.batch_folder,
+                parent_widget=None,
+                progress_callback=on_progress,
+                status_callback=on_status,
+                skip_labeling=True
+            )
 
             results = {
                 "labels": self.classifier.labeler.labels,
-                "class_names": self.classifier.class_names
+                "class_names": self.classifier.class_names,
+                "supervised_preds": supervised_preds,
+                "unsupervised_preds": unsupervised_preds,
+                "confidences": confidences
             }
-            self.finished_signal.emit(True, results, "Workflow completo!")
+            self.progress.emit(100)
+            self.finished_signal.emit(True, results, _t("workflow_complete", self.language))
 
         except Exception as e:
             import traceback
-            self.finished_signal.emit(False, None, f"Erro: {str(e)}\n{traceback.format_exc()}")
+            self.finished_signal.emit(False, None, _t("error_detail", self.language, str(e), traceback.format_exc()))
 
     def _run_realtime(self):
         """Classifica frames da fila usando modelo já treinado."""
         if not self.classifier.has_trained_model():
-            self.status.emit("ERRO: Nenhum modelo treinado carregado!")
-            self.finished_signal.emit(False, None, "Modelo não carregado")
+            self.status.emit(_t("error_no_trained_model", self.language))
+            self.finished_signal.emit(False, None, _t("model_not_loaded", self.language))
             return
 
-        self.status.emit("Classificação em tempo real iniciada")
+        self.status.emit(_t("realtime_classification_started", self.language))
         self._paused = False
         processed_count = 0
 
@@ -2091,8 +2192,8 @@ class SeafloorClassificationThread(QThread):
                 import traceback
                 self.status.emit(f"Erro na classificação: {str(e)}\n{traceback.format_exc()}")
 
-        self.status.emit(f"Classificação finalizada. {processed_count} frames processados.")
-        self.finished_signal.emit(True, None, "Classificação em tempo real finalizada")
+        self.status.emit(_t("realtime_classification_finished", self.language, processed_count))
+        self.finished_signal.emit(True, None, _t("realtime_finished", self.language))
 
 
 # =============================================================================
@@ -2103,7 +2204,7 @@ class SeafloorClassificationDialog(QDialog):
     def __init__(self, parent=None, language="pt"):
         super().__init__(parent)
         self.language = language
-        self.setWindowTitle("Classificação de Fundo Marinho (AI-SCW) - REVISADO")
+        self.setWindowTitle(_t("seafloor_classification_title", self.language))
         self.resize(500, 450)
         self.worker = None
         self._build_ui()
@@ -2112,89 +2213,107 @@ class SeafloorClassificationDialog(QDialog):
         layout = QVBoxLayout(self)
 
         info = QLabel(
-            "Classificação de fundo marinho usando AI-SCW <b>[REVISADO]</b><br>"
-            "<b>Classes:</b> Sedimento, Coral Fragmento, Coral Vivo<br><br>"
-            "<b>Correções:</b><br>"
-            "• PCA usa deep features (InceptionV3, 2048 dims)<br>"
-            "• Split treino/val ANTES de augmentation<br>"
-            "• 2 fases: 5 épocas (frozen) + 8 épocas (fine-tune)<br>"
-            "• Fine-tuning só descongela Mixed_7b + Mixed_7c"
+            "<b>" + _t("classes_label", self.language) + "</b> " +
+            _t("seafloor_classes_list", self.language) + "<br><br>" +
+            "<b>" + _t("instructions", self.language) + "</b> " +
+            _t("seafloor_instructions_text", self.language)
         )
         info.setWordWrap(True)
         layout.addWidget(info)
 
         folder_layout = QHBoxLayout()
-        self.folder_label = QLabel("(nenhuma pasta selecionada)")
+        self.folder_label = QLabel(_t("no_folder_selected", self.language))
         self.folder_label.setStyleSheet("color: gray; font-style: italic;")
-        browse_btn = QPushButton("Selecionar Pasta...")
+        browse_btn = QPushButton(_t("select_folder", self.language))
         browse_btn.clicked.connect(self._select_folder)
         folder_layout.addWidget(self.folder_label, 1)
         folder_layout.addWidget(browse_btn)
         layout.addLayout(folder_layout)
 
-        settings_group = QGroupBox("Configurações")
+        # Nome do experimento
+        exp_layout = QHBoxLayout()
+        exp_layout.addWidget(QLabel(_t("experiment", self.language)))
+        self.exp_name_input = QLineEdit("exp01_baseline")
+        self.exp_name_input.setPlaceholderText(_t("experiment_placeholder", self.language))
+        exp_layout.addWidget(self.exp_name_input, 1)
+        layout.addLayout(exp_layout)
+
+        settings_group = QGroupBox(_t("settings", self.language))
         settings_layout = QFormLayout(settings_group)
 
         self.examples_spin = QSpinBox()
         self.examples_spin.setRange(5, 50)
         self.examples_spin.setValue(10)
-        settings_layout.addRow("Exemplos/classe:", self.examples_spin)
+        settings_layout.addRow(_t("examples_per_class", self.language), self.examples_spin)
 
         self.crop_spin = QDoubleSpinBox()
         self.crop_spin.setRange(0.3, 1.0)
         self.crop_spin.setSingleStep(0.05)
         self.crop_spin.setValue(0.85)
-        settings_layout.addRow("Crop ratio:", self.crop_spin)
+        settings_layout.addRow(_t("crop_ratio_label", self.language), self.crop_spin)
 
-        self.normalize_check = QPushButton("Normalização de cor: ATIVADA")
+        self.normalize_check = QPushButton(_t("color_normalization_on", self.language))
         self.normalize_check.setCheckable(True)
         self.normalize_check.setChecked(True)
         self.normalize_check.clicked.connect(self._toggle_normalize)
-        settings_layout.addRow("Normalização:", self.normalize_check)
+        settings_layout.addRow(_t("normalization_label", self.language), self.normalize_check)
 
-        self.hierarchical_check = QPushButton("Classificador hierárquico: DESATIVADO")
-        self.hierarchical_check.setCheckable(True)
-        self.hierarchical_check.setChecked(False)
-        self.hierarchical_check.clicked.connect(self._toggle_hierarchical)
-        settings_layout.addRow("Hierárquico:", self.hierarchical_check)
+        self.ensemble_check = QPushButton(_t("adaptive_ensemble_off", self.language))
+        self.ensemble_check.setCheckable(True)
+        self.ensemble_check.setChecked(False)
+        self.ensemble_check.clicked.connect(self._toggle_ensemble)
+        settings_layout.addRow(_t("ensemble_label", self.language), self.ensemble_check)
 
         layout.addWidget(settings_group)
 
         self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
         self.progress_bar.setVisible(False)
         layout.addWidget(self.progress_bar)
+
+        # Log ao vivo
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setMaximumHeight(120)
+        self.log_text.setPlaceholderText(_t("log_placeholder", self.language))
+        self.log_text.setVisible(False)
+        layout.addWidget(self.log_text)
 
         self.status_text = QLabel("")
         self.status_text.setVisible(False)
         layout.addWidget(self.status_text)
 
         btn_layout = QHBoxLayout()
-        self.start_btn = QPushButton("Iniciar Classificação")
+        self.start_btn = QPushButton(_t("start_classification", self.language))
         self.start_btn.setEnabled(False)
         self.start_btn.clicked.connect(self._start_classification)
-        cancel_btn = QPushButton("Cancelar")
-        cancel_btn.clicked.connect(self.reject)
+        self.cancel_btn = QPushButton(_t("cancel", self.language))
+        self.cancel_btn.clicked.connect(self.reject)
         btn_layout.addStretch()
         btn_layout.addWidget(self.start_btn)
-        btn_layout.addWidget(cancel_btn)
+        btn_layout.addWidget(self.cancel_btn)
         layout.addLayout(btn_layout)
 
         self.normalize_enabled = True
-        self.hierarchical_enabled = False
+        self.ensemble_enabled = False
         self.folder_path = None
+        self.worker = None
 
     def _toggle_normalize(self):
         self.normalize_enabled = not self.normalize_enabled
-        text = "ATIVADA" if self.normalize_enabled else "DESATIVADA"
-        self.normalize_check.setText(f"Normalização de cor: {text}")
+        self.normalize_check.setText(
+            _t("color_normalization_on" if self.normalize_enabled else "color_normalization_off", self.language)
+        )
 
-    def _toggle_hierarchical(self):
-        self.hierarchical_enabled = not self.hierarchical_enabled
-        text = "ATIVADO" if self.hierarchical_enabled else "DESATIVADO"
-        self.hierarchical_check.setText(f"Classificador hierárquico: {text}")
+    def _toggle_ensemble(self):
+        self.ensemble_enabled = not self.ensemble_enabled
+        self.ensemble_check.setText(
+            _t("adaptive_ensemble_on" if self.ensemble_enabled else "adaptive_ensemble_off", self.language)
+        )
 
     def _select_folder(self):
-        path = QFileDialog.getExistingDirectory(self, "Selecionar pasta de imagens")
+        path = QFileDialog.getExistingDirectory(self, _t("select_image_folder", self.language))
         if path:
             self.folder_path = path
             self.folder_label.setText(Path(path).name)
@@ -2205,84 +2324,110 @@ class SeafloorClassificationDialog(QDialog):
         if not self.folder_path:
             return
 
-        self.status_text.setVisible(True)
-        self.status_text.setText("Carregando imagens...")
-        QApplication.processEvents()
+        # Criar classificador com pasta do experimento
+        exp_name = self.exp_name_input.text().strip() or "exp01_baseline"
+        exp_name = exp_name.replace(" ", "_").replace("/", "_")
+        output_dir = os.path.join(self.folder_path, "seafloor_output", exp_name)
 
-        classifier = SeafloorClassifier(
+        self.classifier = SeafloorClassifier(
             n_clusters=3,
             normalize_colors=self.normalize_enabled,
             n_examples_per_class=self.examples_spin.value(),
             use_augmentation=True,
             fast_mode=True,
-            output_dir=os.path.join(self.folder_path, "seafloor_output"),
+            output_dir=output_dir,
             crop_to_299=True,
             crop_ratio=self.crop_spin.value(),
-            use_hierarchical=self.hierarchical_enabled
+            use_adaptive_ensemble=self.ensemble_enabled
         )
 
-        try:
-            images_raw, images_rgb, image_names = classifier.load_images_from_folder(self.folder_path)
+        self.log_text.append(_t("info_prefix", self.language) + " " + _t("experiment", self.language) + f": {exp_name}")
+        self.log_text.append(_t("info_prefix", self.language) + " " + _t("output_dir_label", self.language) + f": {output_dir}")
 
-            self.status_text.setText("Extraindo deep features para PCA...")
-            QApplication.processEvents()
+        # Configurar UI para modo "rodando"
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.log_text.setVisible(True)
+        self.log_text.clear()
+        self.start_btn.setEnabled(False)
+        self.start_btn.setText(_t("processing", self.language))
+        self.cancel_btn.setText(_t("cancel", self.language))
 
-            # REVISED: Use deep features for PCA
-            deep_features = classifier.deep_feature_extractor.extract(images_rgb)
-            scaler = StandardScaler()
-            deep_scaled = scaler.fit_transform(deep_features)
-            pca_2d = PCA(n_components=2).fit_transform(deep_scaled)
+        # Criar e configurar worker thread
+        self.worker = SeafloorClassificationThread(self.classifier, parent=self)
+        self.worker.set_batch_mode(self.folder_path)
+        self.worker.progress.connect(self._on_progress)
+        self.worker.status.connect(self._on_status)
+        self.worker.finished_signal.connect(self._on_finished)
+        self.worker.request_interactive_labeling.connect(self._on_request_labeling)
+        self.worker.start()
 
-            # INTERACTIVE LABELING
-            self.status_text.setText("Aguardando seleção do usuário (PCA de deep features)...")
-            QApplication.processEvents()
+    def _on_progress(self, value):
+        self.progress_bar.setValue(value)
 
-            labels = classifier.labeler.interactive_labeling_qt(
-                images_rgb, image_names, pca_2d,
-                classifier.n_clusters, classifier.class_names,
-                parent_widget=self
-            )
+    def _on_status(self, msg):
+        self.log_text.append(msg)
+        # Auto-scroll para o final
+        scrollbar = self.log_text.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
 
-            if not labels or len(labels) == 0:
-                QMessageBox.warning(self, "Aviso", 
-                    "Nenhum exemplo selecionado. Usando auto-seleção.")
+    def _on_request_labeling(self, images_rgb, image_names, pca_2d, n_clusters, class_names):
+        """Mostra o dialog de labeling interativo na thread principal.
+
+        IMPORTANTE: este slot roda na thread principal (UI). O dialog é modal
+        e bloqueante. Quando o usuário termina, chamamos set_labeling_result()
+        diretamente no worker — isso é thread-safe e acorda o worker imediatamente.
+        """
+        labels = self.classifier.labeler.interactive_labeling_qt(
+            images_rgb, image_names, pca_2d,
+            n_clusters, class_names,
+            parent_widget=self
+        )
+        if not labels or len(labels) == 0:
+            QMessageBox.warning(self, _t("warning", self.language),
+                _t("no_examples_selected_auto", self.language))
+        # Chamada direta thread-safe — NÃO usar sinal/slot cross-thread
+        self.worker.set_labeling_result(labels)
+
+    def _on_finished(self, success, results, message):
+        self.start_btn.setEnabled(True)
+        self.start_btn.setText(_t("start_classification", self.language))
+        self.progress_bar.setVisible(False)
+
+        # Salvar modelo explicitamente (garantia caso o pipeline tenha falhado)
+        if success and hasattr(self, 'classifier') and self.classifier.has_trained_model():
+            try:
+                model_path = self.classifier.save_model()
+                config_path = self.classifier.save_config()
+                self.log_text.append(_t("saved_prefix", self.language) + " " + _t("model_saved_log", self.language, model_path))
+                self.log_text.append(_t("saved_prefix", self.language) + " " + _t("config_saved_log", self.language, config_path))
+            except Exception as e:
+                self.log_text.append(_t("warning_prefix", self.language) + " " + _t("error_saving_model", self.language, e))
+
+        if success and results:
+            supervised_preds = results.get("supervised_preds", [])
+            confidences = results.get("confidences", [])
+            class_names = results.get("class_names", [])
+
+            if len(supervised_preds) > 0:
+                dist = Counter(supervised_preds)
+                msg = _t("classification_complete_msg", self.language, "")
+                for cls_id, count in dist.items():
+                    if cls_id < len(class_names):
+                        name = _tc(class_names[cls_id], self.language)
+                        msg += f"  {name}: {count}\n"
+                if len(confidences) > 0:
+                    msg += "\n" + _t("avg_confidence", self.language, np.mean(confidences))
+                QMessageBox.information(self, _t("success", self.language), msg)
             else:
-                classifier.labeler.labels = labels
-
-            # Expand labels with deep features
-            self.status_text.setText("Expandindo labels com deep features (k-NN)...")
-            QApplication.processEvents()
-            classifier.labeler.expand_labels_nearest_neighbors(images_rgb, n_neighbors=50)
-
-            # Full classification (REVISED pipeline with proper split)
-            self.status_text.setText("Executando classificação completa...")
-            QApplication.processEvents()
-
-            supervised_preds, unsupervised_preds, confidences = classifier.classify_images(
-                images_rgb, images_raw, image_names,
-                folder_path=self.folder_path,
-                parent_widget=self
-            )
-
-            # Show results
-            dist = Counter(supervised_preds)
-            msg = "Classificação concluída!\n\nDistribuição:\n"
-            for cls_id, count in dist.items():
-                name = classifier.class_names[cls_id]
-                msg += f"  {name}: {count}\n"
-
-            msg += f"\nConfiança média: {np.mean(confidences):.2f}"
-
-            QMessageBox.information(self, "Concluído", msg)
-
-        except Exception as e:
-            import traceback
-            QMessageBox.critical(self, "Erro", f"{str(e)}\n\n{traceback.format_exc()}")
+                QMessageBox.information(self, _t("success", self.language), message)
+        else:
+            QMessageBox.critical(self, _t("error", self.language), message)
 
     def reject(self):
         if self.worker and self.worker.isRunning():
             self.worker.stop()
-            self.worker.wait(1000)
+            self.worker.wait(2000)
         super().reject()
 
 
@@ -2291,10 +2436,11 @@ class SeafloorClassManager(QDialog):
 
     classes_changed = pyqtSignal()
 
-    def __init__(self, classifier, parent=None):
+    def __init__(self, classifier, parent=None, language=None):
         super().__init__(parent)
         self.classifier = classifier
-        self.setWindowTitle("Gerenciar Categorias de Fundo")
+        self.language = language or getattr(classifier, "language", "pt")
+        self.setWindowTitle(_t("manage_seafloor_categories", self.language))
         self.resize(450, 550)
         self._build_ui()
         self._refresh_list()
@@ -2303,14 +2449,16 @@ class SeafloorClassManager(QDialog):
         layout = QVBoxLayout(self)
 
         info = QLabel(
-            "<b>Classes fixas:</b> S=Sedimento, F=Fragmento, R=Recife<br>"
-            "<b>Classes custom:</b> atalhos 1-9, 0<br>"
-            "Máximo 10 classes adicionais."
+            "<b>" + _t("fixed_classes_label", self.language) + "</b> " +
+            _t("fixed_classes_desc", self.language) + "<br>" +
+            "<b>" + _t("custom_classes_label", self.language) + "</b> " +
+            _t("custom_classes_desc", self.language) + "<br>" +
+            _t("max_custom_classes_hint", self.language)
         )
         info.setWordWrap(True)
         layout.addWidget(info)
 
-        layout.addWidget(QLabel("<b>Categorias:</b>"))
+        layout.addWidget(QLabel("<b>" + _t("categories_label", self.language) + "</b>"))
         self.class_list = QListWidget()
         self.class_list.setStyleSheet("""
             QListWidget {
@@ -2323,12 +2471,12 @@ class SeafloorClassManager(QDialog):
         """)
         layout.addWidget(self.class_list)
 
-        add_group = QGroupBox("Adicionar Nova Categoria")
+        add_group = QGroupBox(_t("add_new_category", self.language))
         add_layout = QFormLayout(add_group)
 
         self.new_name = QLineEdit()
-        self.new_name.setPlaceholderText("Ex: Areia, Rocha, Algá...")
-        add_layout.addRow("Nome:", self.new_name)
+        self.new_name.setPlaceholderText(_t("example_placeholder", self.language))
+        add_layout.addRow(_t("name_label", self.language), self.new_name)
 
         color_layout = QHBoxLayout()
         self.color_preview = QLabel("    ")
@@ -2336,30 +2484,30 @@ class SeafloorClassManager(QDialog):
         self.color_preview.setStyleSheet("background-color: #808080; border: 1px solid #333;")
         self.selected_color = None
 
-        color_btn = QPushButton("Escolher Cor")
+        color_btn = QPushButton(_t("choose_color", self.language))
         color_btn.clicked.connect(self._choose_color)
         color_layout.addWidget(self.color_preview)
         color_layout.addWidget(color_btn)
         color_layout.addStretch()
-        add_layout.addRow("Cor:", color_layout)
+        add_layout.addRow(_t("color_label", self.language), color_layout)
 
-        add_btn = QPushButton("Adicionar")
+        add_btn = QPushButton(_t("add", self.language))
         add_btn.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
         add_btn.clicked.connect(self._add_class)
         add_layout.addRow(add_btn)
 
         layout.addWidget(add_group)
 
-        remove_btn = QPushButton("🗑 Remover Selecionada")
+        remove_btn = QPushButton(_t("remove_selected", self.language))
         remove_btn.setStyleSheet("background-color: #f44336; color: white;")
         remove_btn.clicked.connect(self._remove_class)
         layout.addWidget(remove_btn)
 
         layout.addStretch()
         btn_layout = QHBoxLayout()
-        save_btn = QPushButton("Salvar Configuração")
+        save_btn = QPushButton(_t("save_configuration", self.language))
         save_btn.clicked.connect(self._save_config)
-        close_btn = QPushButton("Fechar")
+        close_btn = QPushButton(_t("close", self.language))
         close_btn.clicked.connect(self.accept)
         btn_layout.addWidget(save_btn)
         btn_layout.addStretch()
@@ -2377,7 +2525,7 @@ class SeafloorClassManager(QDialog):
     def _add_class(self):
         name = self.new_name.text().strip()
         if not name:
-            QMessageBox.warning(self, "Erro", "Digite um nome para a categoria")
+            QMessageBox.warning(self, _t("error", self.language), _t("enter_category_name", self.language))
             return
 
         success, shortcut, msg = self.classifier.add_custom_class(
@@ -2391,7 +2539,7 @@ class SeafloorClassManager(QDialog):
             self.color_preview.setStyleSheet("background-color: #808080; border: 1px solid #333;")
             self.classes_changed.emit()
         else:
-            QMessageBox.warning(self, "Erro", msg)
+            QMessageBox.warning(self, _t("error", self.language), msg)
 
     def _remove_class(self):
         current = self.class_list.currentItem()
@@ -2400,22 +2548,33 @@ class SeafloorClassManager(QDialog):
 
         text = current.text()
         if "[FIXO]" in text:
-            QMessageBox.warning(self, "Erro", "Classes fixas (S, F, R) não podem ser removidas!")
+            QMessageBox.warning(self, _t("error", self.language), _t("seafloor_class_fixed", self.language))
             return
 
+        # Find the class in the list to get internal_name
+        classes = self.classifier.list_all_classes()
+        # Extract display name from text: "[S] Sediment (#8B4513) [FIXO]"
         import re
         match = re.search(r'\] (.+?) \(', text)
         if match:
-            name = match.group(1)
-            reply = QMessageBox.question(self, "Confirmar", 
-                                       f"Remover categoria '{name}'?")
+            display_name = match.group(1)
+            # Find internal_name by matching display name
+            internal_name = None
+            for cls in classes:
+                if cls["name"] == display_name:
+                    internal_name = cls.get("internal_name", cls["name"])
+                    break
+            if not internal_name:
+                internal_name = display_name
+            reply = QMessageBox.question(self, _t("confirm", self.language),
+                                       _t("confirm_remove_category", self.language, display_name))
             if reply == QMessageBox.StandardButton.Yes:
-                success, msg = self.classifier.remove_custom_class(name)
+                success, msg = self.classifier.remove_custom_class(internal_name)
                 if success:
                     self._refresh_list()
                     self.classes_changed.emit()
                 else:
-                    QMessageBox.warning(self, "Erro", msg)
+                    QMessageBox.warning(self, _t("error", self.language), msg)
 
     def _refresh_list(self):
         self.class_list.clear()
@@ -2429,7 +2588,7 @@ class SeafloorClassManager(QDialog):
 
             item_text = f"[{shortcut}] {name} ({color})"
             if type_ == "fixed":
-                item_text += " [FIXO]"
+                item_text += " [" + _t("fixed_marker", self.language) + "]"
 
             item = QListWidgetItem(item_text)
 
@@ -2441,4 +2600,4 @@ class SeafloorClassManager(QDialog):
 
     def _save_config(self):
         path = self.classifier.save_config()
-        QMessageBox.information(self, "Salvo", f"Configuração salva em:\n{path}")
+        QMessageBox.information(self, _t("success", self.language), _t("config_saved_to", self.language, path))

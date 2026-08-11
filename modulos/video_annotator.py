@@ -58,7 +58,7 @@ from .seafloor_classifier import (
 # =============================================================================
 
 ACTIVE_BTN_STYLE = """
-    QPushButton {{
+    QPushButton {
         padding: 3px 8px;
         border-radius: 4px;
         border: 1px solid #5c9eff;
@@ -66,7 +66,7 @@ ACTIVE_BTN_STYLE = """
         color: white;
         min-width: 23px;
         min-height: 23px;
-    }}
+    }
 """
 
 INACTIVE_BTN_STYLE_TEMPLATE = """
@@ -139,7 +139,7 @@ CSV_EXTS = "CSV Files (*.csv);;All Files (*)"
 SEAFLOOR_SHORTCUTS = {
     "S": "Sedimento",
     "F": "Coral_Fragmento",
-    "R": "Coral_Vivo",
+    "R": "Recife_Coral",
 }
 
 
@@ -186,6 +186,7 @@ class VideoAnnotator(QMainWindow):
         self.track_colors = {}
         self.current_tracks = {}
         self.best_confidence = {}
+        self._last_plotted_result = None  
 
         # --- Gravação ---
         self.recording = False
@@ -244,6 +245,16 @@ class VideoAnnotator(QMainWindow):
         self.frame_cache = {}
         self.cache_size = 30
         self.use_fp16 = True
+
+        # --- Modo headless (sem renderização de vídeo) ---
+        self.headless_mode = False
+        self.headless_stats = {
+            "frames_processed": 0,
+            "detections_found": 0,
+            "start_time": None,
+            "output_path": None,
+            "all_detections": []
+        }
         self.last_frame_hash = None
         self.last_frame_small = None
 
@@ -684,6 +695,7 @@ class VideoAnnotator(QMainWindow):
             (self.texts["start_recording"], "Ctrl+R", self.start_recording),
             (self.texts["stop_recording"], "Ctrl+Shift+R", self.stop_recording),
             (self.texts["live"], "Ctrl+W", self.toggle_live_mode),
+            (self.texts["process_video_headless"], "Ctrl+Shift+H", self.run_headless_video_processing),
         ]
         for text, shortcut, callback in actions:
             act = QAction(text, self)
@@ -714,6 +726,13 @@ class VideoAnnotator(QMainWindow):
         dark_mode.setCheckable(True)
         dark_mode.triggered.connect(self.set_dark_mode)
         view_menu.addAction(dark_mode)
+
+        view_menu.addSeparator()
+        headless_action = QAction(self.texts.get("headless_mode", "Modo rápido (sem vídeo)"), self)
+        headless_action.setCheckable(True)
+        headless_action.setToolTip(self.texts.get("headless_mode_tooltip", "Processa frames sem renderizar — ideal para batch e benchmark"))
+        headless_action.triggered.connect(self.toggle_headless_mode)
+        view_menu.addAction(headless_action)
 
     def _create_annotation_menu(self, menubar):
         annotation_menu = menubar.addMenu(self.texts["annotation"])
@@ -1204,6 +1223,8 @@ class VideoAnnotator(QMainWindow):
             self.set_status_message("speed_detection_format", "2.0", self.detection_every_n_frames)
         else:
             self.detection_every_n_frames = 0
+            self.last_frame_hash = None
+            self.last_frame_small = None
             interval = int(1000 / fps) if fps > 0 else 30
             self.velocity2_button.setStyleSheet("background-color: None")
             self.set_status_message("speed_format", "1.0", fps)
@@ -1370,13 +1391,7 @@ class VideoAnnotator(QMainWindow):
                 if self.recording:
                     self.recorded_detections.append(detection)
 
-            if self.velocity:
-                plotted = results.plot()
-                self.display_frame(plotted)
-            else:
-                with QMutexLocker(self.detection_mutex):
-                    self.pending_detection_result = {'results': results, 'frame_num': frame_num}
-
+            # NÃO chama display_frame aqui — o frame já foi processado sincronamente
             self.set_status_message("detection_completed", frame_num)
 
         except Exception:
@@ -1473,8 +1488,24 @@ class VideoAnnotator(QMainWindow):
                 frame = self._add_live_timestamp(frame)
 
             # === DISPLAY ===
-            self._display_frame_resized(frame)
-            self.update_time_labels()
+            if self.headless_mode:
+                self.headless_stats["frames_processed"] += 1
+                if self.annotations:
+                    self.headless_stats["all_detections"].extend(self.annotations)
+                    self.headless_stats["detections_found"] += len(self.annotations)
+
+                if self.headless_stats["frames_processed"] % 30 == 0:
+                    elapsed = (datetime.now() - self.headless_stats["start_time"]).total_seconds()
+                    fps = self.headless_stats["frames_processed"] / elapsed if elapsed > 0 else 0
+                    self.status_label.setText(
+                        f"⚡ {self.texts.get('headless_status', 'Headless')} | "
+                        f"Frames: {self.headless_stats['frames_processed']} | "
+                        f"FPS: {fps:.1f} | "
+                        f"Detecções: {self.headless_stats['detections_found']}"
+                    )
+            else:
+                self._display_frame_resized(frame)
+                self.update_time_labels()
 
         except Exception as e:
             self.set_status_message("fatal_error")
@@ -1484,6 +1515,16 @@ class VideoAnnotator(QMainWindow):
 
     def _handle_frame_read_failure(self):
         """Lida com falha na leitura do frame (fim do vídeo ou erro)."""
+        if self.headless_mode and self.headless_stats.get("output_path"):
+            self._save_headless_results()
+            self.headless_mode = False
+            self.toggle_headless_mode(False)
+            self.continuous_detection = False
+            self.toggle_button.setStyleSheet(self._get_button_style())
+            self.paused = True
+            self._update_play_icon()
+            self.timer.stop()
+            return
         if self.seafloor_enabled:
             self.toggle_seafloor_realtime(False)
         if self.live_mode:
@@ -1494,7 +1535,6 @@ class VideoAnnotator(QMainWindow):
             self.sync_frame_num()
             self.paused = True
             self._update_play_icon()
-
     def _handle_seafloor_collection(self):
         """Coleta frames para treinamento de seafloor durante playback."""
         if self.seafloor_collecting and self.current_seafloor_class:
@@ -1524,21 +1564,33 @@ class VideoAnnotator(QMainWindow):
 
     def _process_continuous_detection(self, frame):
         """Processa detecção contínua no frame atual."""
-        frame_copy = np.ascontiguousarray(frame.copy())
-
-        if self.velocity:
-            # Modo 2x: detecção a cada N frames via thread
-            self.frame_skip_counter += 1
-            if self.frame_skip_counter % self.detection_every_n_frames == 0:
-                frame_hash, frame_small = self.frame_to_small_and_hash(frame_copy)
-                if self.last_frame_hash is None or not self.similar_frames(self.last_frame_small, frame_small):
-                    self.last_frame_hash = frame_hash
-                    self.last_frame_small = frame_small
-                    frame_num = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES))
-                    self.detection_thread.set_frame(frame_copy, frame_num)
+        if self.model is None:
             return frame
 
-        # Modo 1x: detecção síncrona em cada frame
+        # ── Skip de frames quando velocity está ativo ──
+        self.frame_skip_counter += 1
+        skip = max(1, self.detection_every_n_frames) if self.velocity else 1
+        should_run_model = (self.frame_skip_counter % skip == 0)
+
+        frame_copy = np.ascontiguousarray(frame.copy())
+
+        # Deduplicação por similaridade (só em 2×)
+        if self.velocity and should_run_model:
+            frame_hash, frame_small = self.frame_to_small_and_hash(frame_copy)
+            if (self.last_frame_hash is not None and 
+                self.similar_frames(self.last_frame_small, frame_small)):
+                should_run_model = False   # frame muito parecido, não roda modelo
+            else:
+                self.last_frame_hash = frame_hash
+                self.last_frame_small = frame_small
+
+        # Se não vai rodar modelo, reutiliza o último frame plotado (evita piscar)
+        if not should_run_model:
+            if self._last_plotted_result is not None:
+                return self._last_plotted_result.copy()
+            return frame
+
+        # ── Roda detecção ──
         with torch.no_grad():
             results = self.model.track(
                 frame_copy,
@@ -1552,12 +1604,16 @@ class VideoAnnotator(QMainWindow):
 
         if results and len(results) > 0 and results[0].boxes:
             frame = results[0].plot(img=frame)
+            self._last_plotted_result = frame.copy()   # guarda para reusar nos skips
             for box in results[0].boxes:
                 detection = self._build_detection_dict(box, frame, self.current_frame_num)
                 self.annotations.append(detection)
                 self.detections_dock.add_detection(detection)
                 if self.recording:
                     self.recorded_detections.append(detection)
+        else:
+            # Nenhuma detecção neste frame → limpa cache visual
+            self._last_plotted_result = None
 
         return frame
 
@@ -2036,9 +2092,10 @@ class VideoAnnotator(QMainWindow):
             if ann.get("type") == "manual" and all(key in ann for key in ["x1", "y1", "x2", "y2", "class"])
         ]
 
-        if not manual_annotations:
-            self.show_warning_message("warning", "no_manual_annotations")
-            return
+        # Agrupa anotações por frame
+        frames_dict = defaultdict(list)
+        for ann in manual_annotations:
+            frames_dict[ann.get("frame_number", 0)].append(ann)
 
         try:
             output_path = Path(output_dir)
@@ -2063,23 +2120,20 @@ class VideoAnnotator(QMainWindow):
 
             class_to_id = merged_classes
 
-            # Agrupa por frame
-            frames_dict = defaultdict(list)
-            for ann in manual_annotations:
-                frames_dict[ann.get("frame_number", 0)].append(ann)
-
-            all_frames = sorted(frames_dict.keys())
-            if not all_frames:
-                self.show_warning_message("warning", "no_manual_annotations")
-                return
-
             is_dataset_mode = self.dataset_mode and self.dataset_frames
 
             if is_dataset_mode:
+                # >>> Exportar TODOS os frames (com e sem labels) <<<
+                all_frames = list(range(len(self.dataset_frames)))
                 dataset_index_to_path = self._build_dataset_index_map(images_dir)
                 get_split = lambda fn: dataset_index_to_path.get(fn, ('', 'train'))[1]
             else:
+                all_frames = sorted(frames_dict.keys())
                 get_split = lambda fn: 'train' if (fn % 10) < 8 else 'val'
+
+            if not all_frames:
+                self.show_warning_message("warning", "no_manual_annotations")
+                return
 
             progress = QProgressDialog(self.texts["exporting_frames"], self.texts["cancel"], 0, len(all_frames), self)
             progress.setWindowTitle(self.texts["exporting_dataset"])
@@ -2104,11 +2158,19 @@ class VideoAnnotator(QMainWindow):
                 if frame is None:
                     continue
 
-                new_lines = self._generate_yolo_labels(frames_dict[frame_num], frame.shape[1], frame.shape[0], class_to_id)
+                # Copia imagem SEMPRE
+                img_dest = images_dir / split / img_name
+                if not img_dest.exists():
+                    cv2.imwrite(str(img_dest), frame)
 
-                with open(label_path, 'w') as f:
-                    for line in sorted(new_lines):
-                        f.write(line + "\n")
+                # Só cria .txt se houver anotações para este frame
+                if frame_num in frames_dict and frames_dict[frame_num]:
+                    new_lines = self._generate_yolo_labels(
+                        frames_dict[frame_num], frame.shape[1], frame.shape[0], class_to_id
+                    )
+                    with open(label_path, 'w') as f:
+                        for line in sorted(new_lines):
+                            f.write(line + "\n")
 
                 processed += 1
 
@@ -2165,6 +2227,13 @@ class VideoAnnotator(QMainWindow):
             h, w = img.shape[:2]
             img_name = Path(img_path).name
             split = get_split(frame_num)
+            
+            # copiar imagem para o novo diretório de treinamento 
+            dest_img_path = images_dir / split / img_name
+            if not dest_img_path.exists():
+                dest_img_path.parent.mkdir(parents=True, exist_ok=True)
+                cv2.imwrite(str(dest_img_path), img)
+            
             label_name = Path(img_name).stem + ".txt"
             return img, img_name, split, labels_dir / split / label_name
         else:
@@ -2394,7 +2463,7 @@ class VideoAnnotator(QMainWindow):
                         if x2 <= x1 or y2 <= y1:
                             continue
 
-                        # >>> CORREÇÃO: lookup direto pelo ID numérico do YAML <<<
+                        # >>> lookup direto pelo ID numérico do YAML <<<
                         class_name = class_id_map.get(class_id, f"class_{class_id}")
                         annotation = {
                             "x1": x1, "y1": y1, "x2": x2, "y2": y2,
@@ -3346,10 +3415,26 @@ class VideoAnnotator(QMainWindow):
             for ann in self.segmentation_annotations:
                 frames_dict[ann.get("frame_number", 0)].append(ann)
 
-            all_frames = sorted(frames_dict.keys())
             is_dataset_mode = self.dataset_mode and self.dataset_frames
 
-            train_frames, val_frames = self._split_frames_for_export(all_frames, is_dataset_mode)
+            # >>> CORREÇÃO: exportar TODOS os frames no modo dataset (incluindo backgrounds) <<<
+            if is_dataset_mode:
+                all_frames = list(range(len(self.dataset_frames)))
+                train_frames, val_frames = set(), set()
+                for fn in all_frames:
+                    if fn < len(self.dataset_frames):
+                        orig_split = Path(self.dataset_frames[fn][0]).parent.name
+                        if orig_split == 'val':
+                            val_frames.add(fn)
+                        else:
+                            train_frames.add(fn)
+            else:
+                all_frames = sorted(frames_dict.keys())
+                train_frames, val_frames = self._split_frames_for_export(all_frames, is_dataset_mode)
+
+            if not all_frames:
+                return 0
+
             index_offset = self._detect_max_existing_index(images_dir)
             exported_count = self._export_segmentation_frames(
                 all_frames, frames_dict, images_dir, labels_dir, class_to_id,
@@ -3422,23 +3507,25 @@ class VideoAnnotator(QMainWindow):
             if not img_path.exists():
                 cv2.imwrite(str(img_path), frame)
 
-            label_name = Path(img_name).stem + ".txt"
-            label_path = labels_dir / img_subdir / label_name
-            existing_lines = []
-            if label_path.exists():
-                with open(label_path, 'r') as f:
-                    existing_lines = [line.strip() for line in f if line.strip()]
+            # >>>  só cria label se houver anotações para este frame <<<
+            if frame_num in frames_dict and frames_dict[frame_num]:
+                label_name = Path(img_name).stem + ".txt"
+                label_path = labels_dir / img_subdir / label_name
+                existing_lines = []
+                if label_path.exists():
+                    with open(label_path, 'r') as f:
+                        existing_lines = [line.strip() for line in f if line.strip()]
 
-            new_lines = []
-            for ann in frames_dict[frame_num]:
-                class_id = class_to_id[ann["class"]]
-                coords = ann["polygon"]
-                line = f"{class_id} " + " ".join([f"{x:.6f} {y:.6f}" for x, y in coords])
-                new_lines.append(line)
+                new_lines = []
+                for ann in frames_dict[frame_num]:
+                    class_id = class_to_id[ann["class"]]
+                    coords = ann["polygon"]
+                    line = f"{class_id} " + " ".join([f"{x:.6f} {y:.6f}" for x, y in coords])
+                    new_lines.append(line)
 
-            with open(label_path, 'w') as f:
-                for line in existing_lines + new_lines:
-                    f.write(line + "\n")
+                with open(label_path, 'w') as f:
+                    for line in existing_lines + new_lines:
+                        f.write(line + "\n")
 
             exported_count += 1
 
@@ -3448,11 +3535,14 @@ class VideoAnnotator(QMainWindow):
     def _get_segmentation_frame(self, frame_num, is_dataset_mode, train_frames, val_frames, index_offset, images_dir):
         """Obtém frame para exportação de segmentação."""
         if is_dataset_mode and frame_num < len(self.dataset_frames):
-            dataset_path, _, dataset_index = self.dataset_frames[frame_num]
-            global_index = index_offset + dataset_index
-            img_name = f"frame_{global_index:06d}.jpg"
+            dataset_path, _, _ = self.dataset_frames[frame_num]
             frame = cv2.imread(dataset_path)
-            is_train = frame_num in train_frames
+            if frame is None:
+                return None, None, None
+            # >>> CORREÇÃO: usar nome original da imagem e manter split <<<
+            img_name = Path(dataset_path).name
+            orig_split = Path(dataset_path).parent.name
+            is_train = orig_split == 'train' if orig_split in ('train', 'val') else True
             return frame, img_name, is_train
         elif self.cap and self.cap.isOpened():
             current_pos = self.cap.get(cv2.CAP_PROP_POS_FRAMES)
@@ -3813,6 +3903,110 @@ class VideoAnnotator(QMainWindow):
 
 
     # -------------------------------------------------------------------------
+    # -------------------------------------------------------------------------
+    # MODO HEADLESS (SEM RENDERIZAÇÃO)
+    # -------------------------------------------------------------------------
+
+    def toggle_headless_mode(self, enabled):
+        """Ativa/desativa modo de processamento sem renderização de vídeo."""
+        self.headless_mode = enabled
+        if enabled:
+            self.video_label.setVisible(False)
+            self.progress_slider.setVisible(False)
+            self.current_time_label.setVisible(False)
+            self.total_time_label.setVisible(False)
+            self.info_panel.setVisible(True)
+            self._update_info_panel(
+                self.texts.get("headless_active", "⚡ Modo rápido ativo — processando sem vídeo"),
+                "#FF9800"
+            )
+            self.headless_stats = {
+                "frames_processed": 0,
+                "detections_found": 0,
+                "start_time": datetime.now(),
+                "output_path": None,
+                "all_detections": []
+            }
+        else:
+            self.video_label.setVisible(True)
+            self.progress_slider.setVisible(True)
+            self.current_time_label.setVisible(True)
+            self.total_time_label.setVisible(True)
+            self._update_info_panel("")
+            if self.current_frame is not None:
+                self.display_frame(self.current_frame)
+
+    def run_headless_video_processing(self):
+        """Processa vídeo inteiro sem renderização, salvando CSV ao final."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            self.texts.get("select_video_headless", "Selecionar vídeo para processamento rápido"),
+            "",
+            self.texts.get("video_files_filter", "Vídeos") + " (*.mp4 *.avi *.mov *.mkv *.m4v *.flv *.wmv);;" +
+            self.texts.get("all_files", "Todos os arquivos") + " (*)"
+        )
+        if not file_path:
+            return
+
+        if self.model is None:
+            self.show_warning_message("warning", "no_model_loaded")
+            return
+
+        default_csv = f"{Path(file_path).stem}_detections.csv"
+        output_path, _ = QFileDialog.getSaveFileName(
+            self,
+            self.texts.get("save_annotations_dialog", "Salvar detecções"),
+            default_csv,
+            "CSV Files (*.csv);;All Files (*)"
+        )
+        if not output_path:
+            return
+
+        self.start_video(file_path)
+        self.continuous_detection = True
+        self.headless_mode = True
+        self.headless_stats = {
+            "frames_processed": 0,
+            "detections_found": 0,
+            "start_time": datetime.now(),
+            "output_path": output_path,
+            "all_detections": []
+        }
+
+        self.video_label.setVisible(False)
+        self.progress_slider.setVisible(False)
+        self.current_time_label.setVisible(False)
+        self.total_time_label.setVisible(False)
+        self.info_panel.setVisible(True)
+        self._update_info_panel(
+            self.texts.get("headless_active", "⚡ Modo rápido ativo — processando sem vídeo"),
+            "#FF9800"
+        )
+
+        if self.paused:
+            self.toggle_play_pause()
+
+    def _save_headless_results(self):
+        """Salva resultados acumulados do modo headless em CSV."""
+        if not hasattr(self, 'headless_stats') or not self.headless_stats.get("output_path"):
+            return
+
+        output_path = self.headless_stats["output_path"]
+        detections = self.headless_stats.get("all_detections", [])
+
+        if detections:
+            self._save_detections_csv(detections, output_path, self.video_path or "headless")
+            self.status_label.setText(
+                self.texts.get("headless_results_saved", "✓ Resultados salvos em: {}").format(output_path)
+            )
+        else:
+            self.status_label.setText(
+                self.texts.get("no_annotations_to_export", "Nenhuma anotação disponível para exportar.")
+            )
+
+        # Limpa para evitar salvar duplicado
+        self.headless_stats["output_path"] = None
+
     # INFERÊNCIA EM BATCH (IMAGENS)
     # -------------------------------------------------------------------------
 
@@ -4358,4 +4552,8 @@ class VideoAnnotator(QMainWindow):
         if self.current_seafloor_class:
             self._save_seafloor_annotation_segment()
 
+
+        # Salvar resultados headless se houver
+        if hasattr(self, 'headless_stats') and self.headless_stats.get("output_path"):
+            self._save_headless_results()
         event.accept()

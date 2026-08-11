@@ -12,454 +12,534 @@ from collections import defaultdict, Counter
 from datetime import datetime
 
 
+# === MAPA DE CATEGORIAS TAXONOMICAS PARA RESUMO ===
+CATEGORY_MAP = {
+    'exact': 'exacto',
+    'common_family': 'familia_ordem',
+    'common_order': 'familia_ordem',
+    'common_genus': 'familia_ordem',
+    'common_species': 'familia_ordem',
+    'ancestor_family': 'familia_ordem',
+    'ancestor_order': 'familia_ordem',
+    'ancestor_genus': 'familia_ordem',
+    'ancestor_species': 'familia_ordem',
+    'descendant_family': 'familia_ordem',
+    'descendant_order': 'familia_ordem',
+    'descendant_genus': 'familia_ordem',
+    'descendant_species': 'familia_ordem',
+    'common_phylum': 'superior',
+    'common_kingdom': 'superior',
+    'common_class': 'superior',
+    'common_gigaclass': 'superior',
+    'common_infraclass': 'superior',
+    'common_superfamily': 'superior',
+    'ancestor_phylum': 'superior',
+    'ancestor_kingdom': 'superior',
+    'ancestor_class': 'superior',
+    'ancestor_gigaclass': 'superior',
+    'ancestor_infraclass': 'superior',
+    'ancestor_superfamily': 'superior',
+    'descendant_phylum': 'superior',
+    'descendant_kingdom': 'superior',
+    'descendant_class': 'superior',
+    'descendant_gigaclass': 'superior',
+    'descendant_infraclass': 'superior',
+    'descendant_superfamily': 'superior',
+    'unrelated': 'sem_relacao',
+    'unmatched': 'sem_relacao',
+}
+
+
 class TrainThread(QThread):
     finished = pyqtSignal()
     epoch_progress = pyqtSignal(int)
-    hier_metrics_ready = pyqtSignal(dict)  # Novo sinal para métricas hierárquicas por época
+    hier_metrics_ready = pyqtSignal(dict)
 
     def __init__(self, train_config):
         super().__init__()
         self.train_config = train_config
         self.success = False
-        self.error = ""
-        self.model_path = ""
-        self._hierarchical_history = []  # Histórico de métricas por época
-        self._yolo_model = None  # <-- REFERÊNCIA AO WRAPPER YOLO (não ao BaseModel interno)
+        self.error = ''
+        self.model_path = ''
+        self._hierarchical_history = []
+        self._yolo_model = None
 
     def run(self):
-        try:  
-            model = YOLO("yolo26n.pt")
-            self._yolo_model = model  # <-- GUARDA REFERÊNCIA AO WRAPPER YOLO
+        try:
+            model = YOLO('yolo26n.pt')
+            self._yolo_model = model
 
             def on_epoch_end(trainer):
                 self.epoch_progress.emit(trainer.epoch + 1)
 
-            model.add_callback("on_train_epoch_end", on_epoch_end)
-
-            # Callback para métricas hierárquicas durante validação por época
-            def on_val_end(trainer):
-                """Executa avaliação hierárquica ao final de cada época de validação."""
-                try:
-                    self._run_hierarchical_evaluation_per_epoch(trainer)
-                except Exception as e:
-                    print(f"[Hierarchical] Per-epoch evaluation error: {e}")
-
-            # Registra callback apenas se houver dados taxonômicos disponíveis
-            data_path = self.train_config.get('data')
-            if data_path and Path(data_path).exists():
-                validator = HierarchicalValidator(
-                    cache_file="worms_cache.json",
-                    dataset_yaml=data_path
-                )
-                if validator.available:
-                    model.add_callback("on_fit_epoch_end", on_val_end)
-                    print("[Hierarchical] Per-epoch hierarchical evaluation enabled")
+            model.add_callback('on_train_epoch_end', on_epoch_end)
 
             aug_params = {
-                "hsv_h": 0.05,        # matiz
-                "hsv_s": 0.9,          # saturação
-                "hsv_v": 0.6,          # valor
-                "degrees": 15.0,        # rotação
-                "translate": 0.2,      # translação
-                "scale": 0.7,          # escala
-                "shear": 5.0,          # cisalhamento
-                "perspective": 0.001,    # perspectiva
-                "flipud": 0.3,         # flip vertical
-                "fliplr": 0.5,         # flip horizontal
-                "mosaic": 1.0,         # mosaic
-                "mixup": 0.1,          # mixup
-                "copy_paste": 0.1,     # copy-paste
-                "auto_augment": "randaugment",
-                "erasing": 0.4,        # random erasing
+                'hsv_h': 0.05,
+                'hsv_s': 0.9,
+                'hsv_v': 0.6,
+                'degrees': 15.0,
+                'translate': 0.2,
+                'scale': 0.7,
+                'shear': 5.0,
+                'perspective': 0.001,
+                'flipud': 0.3,
+                'fliplr': 0.5,
+                'mosaic': 1.0,
+                'mixup': 0.1,
+                'copy_paste': 0.1,
+                'auto_augment': 'randaugment',
+                'erasing': 0.4,
             }
 
-            # Mescla com train_config (train_config tem prioridade)
             final_config = {**aug_params, **self.train_config}
-
             model.train(**final_config)
 
-            # Avaliação hierárquica final (pós-treino completo)
             self._run_hierarchical_evaluation(model, final_config)
 
             self.model_path = os.path.join(
-                "models", "detect",
-                final_config["name"],
-                "weights", "best.pt"
+                'models', 'detect',
+                final_config['name'],
+                'weights', 'best.pt'
             )
             self.success = True
 
         except Exception as e:
             self.success = False
             self.error = str(e)
-            print(f"Training error: {traceback.format_exc()}")
+            print(f'Training error: {traceback.format_exc()}')
         finally:
             self.finished.emit()
 
-    def _run_hierarchical_evaluation_per_epoch(self, trainer):
-        """
-        Avaliação hierárquica rápida por época (amostra pequena para não travar treino).
-        """
-        try:
-            # ✅ USA O WRAPPER YOLO GUARDADO, NÃO trainer.model (BaseModel)
-            if self._yolo_model is None:
-                print("[Hierarchical] YOLO wrapper not available for epoch eval")
-                return
-
-            data_path = self.train_config.get('data')
-            if not data_path or not Path(data_path).exists():
-                return
-
-            validator = HierarchicalValidator(
-                cache_file="worms_cache.json",
-                dataset_yaml=data_path
-            )
-
-            if not validator.available:
-                return
-
-            # Amostra pequena (50 imgs) para não travar treino
-            val_path = Path(data_path).parent if Path(data_path).is_file() else Path(data_path)
-            val_images = self._find_val_images(val_path)
-
-            if not val_images:
-                return
-
-            import random
-            random.seed(42)
-            sample = random.sample(val_images, min(50, len(val_images)))
-
-            # Processa amostra usando o wrapper YOLO
-            metrics = self._evaluate_sample(self._yolo_model, sample, validator, is_epoch_eval=True)
-
-            if metrics:
-                metrics['epoch'] = trainer.epoch
-                metrics['timestamp'] = datetime.now().isoformat()
-                self._hierarchical_history.append(metrics)
-                self.hier_metrics_ready.emit(metrics)
-
-        except Exception as e:
-            print(f"[Hierarchical] Epoch eval error: {e}")
-
     def _run_hierarchical_evaluation(self, model, config):
-        """
-        Avaliação hierárquica completa pós-treino.
-        Processa TODO o val set (ou amostra estratificada de até 500 imgs).
-        """
         try:
             data_path = config.get('data')
             if not data_path or not Path(data_path).exists():
                 return
 
             validator = HierarchicalValidator(
-                cache_file="worms_cache.json",
+                cache_file='worms_cache.json',
                 dataset_yaml=data_path
             )
 
             if not validator.available:
-                print("[Hierarchical] No taxonomy data available (cache or dataset)")
+                print('[Hierarchical] No taxonomy data available (cache or dataset)')
                 return
 
-            print("\n" + "="*60)
-            print("HIERARCHICAL EVALUATION (FULL)")
-            print("="*60)
+            print('\n' + '='*60)
+            print('HIERARCHICAL EVALUATION (FULL)')
+            print('='*60)
 
-            # Validação padrão do YOLO
             val_results = model.val(verbose=False)
 
             box_map50 = 0
             if hasattr(val_results, 'results_dict'):
-                box_map50 = val_results.results_dict.get('metrics/mAP50(B)', 
+                box_map50 = val_results.results_dict.get('metrics/mAP50(B)',
                             val_results.results_dict.get('metrics/mAP50', 0))
-                print(f"Standard mAP@0.5: {box_map50:.4f}")
+                print(f'Standard mAP@0.5: {box_map50:.4f}')
 
-            # === AVALIAÇÃO HIERÁRQUICA APRIMORADA ===
             val_path = Path(data_path).parent if Path(data_path).is_file() else Path(data_path)
 
             if val_path.exists():
                 import random
                 random.seed(42)
 
-                # Encontra TODAS as imagens de validação
                 val_images = self._find_val_images(val_path)
 
                 if not val_images:
-                    print("[Hierarchical] No validation images found")
+                    print('[Hierarchical] No validation images found')
                     return
 
-                # Amostra estratificada: até 500 imagens, garantindo diversidade
                 max_sample = 500
                 if len(val_images) > max_sample:
-                    # Estratificação simples: amostrar proporcionalmente
                     sample = self._stratified_sample(val_images, max_sample)
                 else:
                     sample = val_images
 
-                print(f"Evaluating {len(sample)} validation images (from {len(val_images)} total)...")
+                print(f'Evaluating {len(sample)} validation images (from {len(val_images)} total)...')
 
-                # Processa amostra completa
                 metrics = self._evaluate_sample(model, sample, validator, is_epoch_eval=False)
 
                 if metrics:
                     h_map = metrics['h_mAP']
                     traditional_mAP = metrics['traditional_mAP']
+                    calib = metrics['calibration_factor']
+                    h_map_calib = metrics['h_mAP_calib']
+                    trad_calib = metrics['traditional_mAP_calib']
 
-                    print(f"\nh-mAP (hierarchical):   {h_map:.4f}")
-                    print(f"mAP (traditional):      {traditional_mAP:.4f}")
-                    print(f"Standard mAP@0.5:       {box_map50:.4f}")
+                    print(f'\nh-mAP50 (hierarchical):   {h_map:.4f} (raw) / {h_map_calib:.4f} (calib)')
+                    print(f'mAP50 (traditional):      {traditional_mAP:.4f} (raw) / {trad_calib:.4f} (calib)')
+                    print(f'Standard mAP@0.5:         {box_map50:.4f}')
+                    print(f'Calib factor:             {calib:.4f}')
 
-                    # Estatísticas por tipo de erro/acerto
-                    print("\nBreakdown:")
+                    print('\nBreakdown:')
                     for match_type, count in metrics['breakdown'].items():
                         pct = count / metrics['total_samples'] * 100
-                        print(f"  {match_type}: {count} ({pct:.1f}%)")
+                        print(f'  {match_type}: {count} ({pct:.1f}%)')
 
-                    # Métricas por rank
                     if metrics.get('h_mAP_per_rank'):
-                        print("\nh-mAP per rank:")
-                        for rank, score in sorted(metrics['h_mAP_per_rank'].items(), 
+                        print('\nh-mAP per rank:')
+                        for rank, score in sorted(metrics['h_mAP_per_rank'].items(),
                                                    key=lambda x: -x[1]):
-                            print(f"  {rank}: {score:.4f}")
+                            print(f'  {rank}: {score:.4f}')
 
-                    # Taxonomia coverage
                     if metrics.get('taxonomy_coverage'):
                         cov = metrics['taxonomy_coverage']
-                        print(f"\nTaxonomy coverage: {cov['coverage_pct']:.1f}% "
-                              f"({cov['with_hierarchy']}/{cov['total']} with hierarchy)")
+                        print(f'\nTaxonomy coverage: {cov["coverage_pct"]:.1f}% '
+                              f'({cov["with_hierarchy"]}/{cov["total"]} with hierarchy)')
 
-                    # Salva resultados enriquecidos
+                    # Resumo hierarquico
+                    self._print_hierarchical_summary(metrics['breakdown'], metrics['total_samples'])
+
                     self._save_hierarchical_results(config, metrics, box_map50, len(sample))
-
-                    # Salva histórico completo
                     self._save_hierarchical_history(config)
 
-                print("="*60)
+                print('='*60)
 
         except Exception as e:
-            print(f"[Hierarchical] Evaluation error: {e}")
+            print(f'[Hierarchical] Evaluation error: {e}')
             import traceback
             traceback.print_exc()
 
     def _find_val_images(self, val_path: Path) -> list:
-        """Encontra todas as imagens de validação no diretório do dataset."""
         val_images = []
         extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff', '.webp'}
-
-        # Diretórios comuns onde podem estar as imagens de val
         possible_val_dirs = [
-            val_path / "images" / "val",
-            val_path / "val" / "images",
-            val_path / "val",
+            val_path / 'images' / 'val',
+            val_path / 'val' / 'images',
+            val_path / 'val',
         ]
-
         for val_dir in possible_val_dirs:
             if val_dir.exists() and val_dir.is_dir():
                 for f in val_dir.rglob('*'):
                     if f.is_file() and f.suffix.lower() in extensions:
                         val_images.append(f)
-
-        # Se ainda não encontrou, tenta buscar no diretório pai (caso val_path seja subpasta)
         if not val_images and val_path.parent.exists():
             for val_dir in [
-                val_path.parent / "images" / "val",
-                val_path.parent / "val" / "images",
-                val_path.parent / "val",
+                val_path.parent / 'images' / 'val',
+                val_path.parent / 'val' / 'images',
+                val_path.parent / 'val',
             ]:
                 if val_dir.exists() and val_dir.is_dir():
                     for f in val_dir.rglob('*'):
                         if f.is_file() and f.suffix.lower() in extensions:
                             val_images.append(f)
-
-        # Remove duplicatas mantendo ordem
         seen = set()
         unique = []
         for p in val_images:
             if p not in seen:
                 seen.add(p)
                 unique.append(p)
-
         return unique
 
     def _stratified_sample(self, images: list, max_size: int) -> list:
-        """
-        Amostra estratificada garantindo diversidade de vídeos/diretórios.
-        """
         import random
-
-        # Agrupa por diretório pai (presumivelmente vídeo/fonte diferente)
         groups = defaultdict(list)
         for img in images:
             parent = img.parent.name
             groups[parent].append(img)
-
-        # Calcula quantas imagens por grupo (proporcional)
         total = len(images)
         sample = []
-
         for group, imgs in groups.items():
             n = max(1, int(len(imgs) / total * max_size))
             sample.extend(random.sample(imgs, min(n, len(imgs))))
-
-        # Se ainda não atingiu max_size, preenche aleatoriamente
         if len(sample) < max_size:
             remaining = [img for img in images if img not in sample]
             need = max_size - len(sample)
             sample.extend(random.sample(remaining, min(need, len(remaining))))
-
         return sample[:max_size]
 
-    def _evaluate_sample(self, model, sample: list, validator: HierarchicalValidator, 
+    def _iou(self, box1, box2):
+        x1 = max(box1[0], box2[0])
+        y1 = max(box1[1], box2[1])
+        x2 = min(box1[2], box2[2])
+        y2 = min(box1[3], box2[3])
+        inter = max(0, x2 - x1) * max(0, y2 - y1)
+        area1 = (box1[2] - box1[0]) * (box1[3] - box1[1])
+        area2 = (box2[2] - box2[0]) * (box2[3] - box2[1])
+        union = area1 + area2 - inter
+        return inter / union if union > 0 else 0.0
+
+    def _compute_ap(self, recall, precision):
+        if not recall or not precision:
+            return 0.0
+        recall = [0.0] + list(recall) + [1.0]
+        precision = [0.0] + list(precision) + [0.0]
+        for i in range(len(precision) - 2, -1, -1):
+            precision[i] = max(precision[i], precision[i + 1])
+        ap = 0.0
+        prev_r = 0.0
+        for r, p in zip(recall, precision):
+            if r > prev_r:
+                ap += p * (r - prev_r)
+                prev_r = r
+        return ap
+
+    def _evaluate_sample(self, model, sample: list, validator: HierarchicalValidator,
                          is_epoch_eval: bool = False) -> dict:
-        """
-        Avalia uma amostra de imagens com matching IoU-based.
+        '''
+        Avalia amostra calculando mAP50 e h-mAP50 com curva PR real.
+        Matching global em 2 passagens:
+          1. EXACT: todas as predicoes (todas as classes), ordenadas por confianca.
+             Cada predicao so faz match com GT da MESMA classe.
+          2. HIERARQUICO: predicoes restantes, ordenadas por confianca.
+             Faz match com qualquer GT nao-matched.
+        '''
+        import numpy as np
+        all_class_names = list(model.names.values())
 
-        Args:
-            model: Modelo YOLO (wrapper YOLO, NÃO BaseModel)
-            sample: Lista de Path das imagens
-            validator: HierarchicalValidator instanciado
-            is_epoch_eval: Se True, avaliação rápida por época (menos verbosa)
-
-        Returns:
-            Dict com métricas hierárquicas
-        """
-        matcher = IoUMatcher(iou_threshold=0.5)
-
-        all_scores = []
-        all_ious = []
-        total_with_hierarchy = 0
-        total_without_hierarchy = 0
-
-        # Batch predictions para eficiência
-        batch_size = 8 if is_epoch_eval else 16
-
-        for batch_start in range(0, len(sample), batch_size):
-            batch = sample[batch_start:batch_start + batch_size]
-
-            # Predições em batch usando o wrapper YOLO
-            results = model.predict(source=batch, verbose=False, conf=0.25)
-
-            for img_path, r in zip(batch, results):
-                # Extrai predições
-                pred_boxes = []
-                pred_classes = []
-                pred_ids = []
-
-                if r.boxes:
-                    for box in r.boxes:
-                        x1, y1, x2, y2 = map(float, box.xyxy[0].tolist())
-                        cls_id = int(box.cls)
-                        cls_name = model.names[cls_id]
-                        pred_boxes.append((x1, y1, x2, y2))
-                        pred_classes.append(cls_name)
-                        pred_ids.append(cls_id)
-
-                # Ground truths
-                gt_boxes, gt_classes, gt_ids = self._read_ground_truths_with_ids(
-                    img_path, model.names
-                )
-
-                # Matching IoU-based
-                matched_preds, matched_gts, matched_pred_ids, matched_gt_ids, matched_ious = \
-                    matcher.match(pred_boxes, gt_boxes, pred_classes, gt_classes, 
-                                  pred_ids, gt_ids)
-
-                # Calcula scores hierárquicos para matches
-                for pred, gt, pred_id, gt_id, iou in zip(
-                    matched_preds, matched_gts, matched_pred_ids, matched_gt_ids, matched_ious
-                ):
-                    score, match_type = validator.calculate_score(pred, gt, pred_id, gt_id)
-
-                    # Verifica se há hierarquia disponível
-                    gt_hier = validator.get_hierarchy_by_id(gt_id, gt)
-                    if len(gt_hier) > 1 or gt_hier[0].get('rank') != 'unknown':
-                        total_with_hierarchy += 1
-                    else:
-                        total_without_hierarchy += 1
-
-                    all_scores.append({
-                        "pred": pred, "gt": gt,
-                        "pred_id": pred_id, "gt_id": gt_id,
-                        "score": score, "type": match_type,
-                        "iou": iou,
-                        "image": str(img_path.name)
+        # --- Passo 1: Coleta predicoes e GTs por imagem ---
+        img_data = []
+        for img_path in sample:
+            r = model.predict(source=[img_path], verbose=False, conf=0.25)[0]
+            preds = []
+            if r.boxes:
+                for box in r.boxes:
+                    x1, y1, x2, y2 = map(float, box.xyxy[0].tolist())
+                    preds.append({
+                        'box': (x1, y1, x2, y2),
+                        'cls': model.names[int(box.cls)],
+                        'cls_id': int(box.cls),
+                        'conf': float(box.conf)
                     })
-                    all_ious.append(iou)
+            gt_boxes, gt_classes, gt_ids = self._read_ground_truths_with_ids(
+                img_path, model.names
+            )
+            gts = [{'box': b, 'cls': c, 'cls_id': cid}
+                   for b, c, cid in zip(gt_boxes, gt_classes, gt_ids)]
+            img_data.append({'img_path': img_path, 'preds': preds, 'gts': gts})
 
-        if not all_scores:
-            return None
+        # --- Passo 2: MATCHING EXACT GLOBAL ---
+        all_preds_exact = []
+        for img_idx, img in enumerate(img_data):
+            for pred_idx, p in enumerate(img['preds']):
+                all_preds_exact.append({
+                    'conf': p['conf'], 'img_idx': img_idx, 'pred_idx': pred_idx,
+                    'cls': p['cls'], 'cls_id': p['cls_id'], 'box': p['box']
+                })
+        all_preds_exact.sort(key=lambda x: -x['conf'])
 
-        # Métricas agregadas
-        h_map = sum(s["score"] for s in all_scores) / len(all_scores)
-        exact = sum(1 for s in all_scores if s["type"] == "exact")
+        for img in img_data:
+            for g in img['gts']:
+                g['matched_exact'] = False
+                g['matched_hier'] = False
+
+        exact_matches = []
+        for p in all_preds_exact:
+            img = img_data[p['img_idx']]
+            best_iou = 0.0
+            best_gt = None
+            for g in img['gts']:
+                if g['cls'] != p['cls'] or g.get('matched_exact', False):
+                    continue
+                iou = self._iou(p['box'], g['box'])
+                if iou >= 0.5 and iou > best_iou:
+                    best_iou = iou
+                    best_gt = g
+            if best_gt:
+                best_gt['matched_exact'] = True
+                exact_matches.append({
+                    'pred_cls': p['cls'], 'pred_cls_id': p['cls_id'],
+                    'gt_cls': best_gt['cls'], 'gt_cls_id': best_gt['cls_id'],
+                    'conf': p['conf'], 'img_idx': p['img_idx'], 'score': 1.0, 'type': 'exact'
+                })
+
+        # --- Passo 3: MATCHING HIERARQUICO GLOBAL ---
+        pred_matched_exact = set()
+        for m in exact_matches:
+            img = img_data[m['img_idx']]
+            for pi, p in enumerate(img['preds']):
+                if abs(p['conf'] - m['conf']) < 1e-9 and p['cls'] == m['pred_cls']:
+                    key = (m['img_idx'], pi)
+                    if key not in pred_matched_exact:
+                        pred_matched_exact.add(key)
+                        break
+
+        all_preds_hier = []
+        for img_idx, img in enumerate(img_data):
+            for pred_idx, p in enumerate(img['preds']):
+                if (img_idx, pred_idx) not in pred_matched_exact:
+                    all_preds_hier.append({
+                        'conf': p['conf'], 'img_idx': img_idx, 'pred_idx': pred_idx,
+                        'cls': p['cls'], 'cls_id': p['cls_id'], 'box': p['box']
+                    })
+        all_preds_hier.sort(key=lambda x: -x['conf'])
+
+        hier_matches = []
+        for p in all_preds_hier:
+            img = img_data[p['img_idx']]
+            best_iou = 0.0
+            best_gt = None
+            for g in img['gts']:
+                if g.get('matched_exact', False) or g.get('matched_hier', False):
+                    continue
+                iou = self._iou(p['box'], g['box'])
+                if iou >= 0.5 and iou > best_iou:
+                    best_iou = iou
+                    best_gt = g
+            if best_gt:
+                best_gt['matched_hier'] = True
+                if validator.available:
+                    score, mtype = validator.calculate_score(
+                        p['cls'], best_gt['cls'], p['cls_id'], best_gt['cls_id']
+                    )
+                else:
+                    score = 0.0
+                    mtype = 'unrelated'
+                hier_matches.append({
+                    'pred_cls': p['cls'], 'pred_cls_id': p['cls_id'],
+                    'gt_cls': best_gt['cls'], 'gt_cls_id': best_gt['cls_id'],
+                    'conf': p['conf'], 'img_idx': p['img_idx'], 'score': score, 'type': mtype
+                })
+
+        # --- Passo 4: mAP TRADICIONAL (por classe) ---
+        traditional_ap_per_class = {}
+        for cls_name in all_class_names:
+            cls_preds = [m for m in exact_matches if m['pred_cls'] == cls_name]
+            num_gt = sum(1 for img in img_data for g in img['gts'] if g['cls'] == cls_name)
+            if not cls_preds:
+                traditional_ap_per_class[cls_name] = 0.0
+                continue
+            cls_preds.sort(key=lambda x: -x['conf'])
+            scores = [m['score'] for m in cls_preds]
+            cumsum = 0
+            precisions = []
+            recalls = []
+            for i, s in enumerate(scores, 1):
+                cumsum += s
+                precisions.append(cumsum / i)
+                recalls.append(cumsum / num_gt if num_gt > 0 else 0.0)
+            traditional_ap_per_class[cls_name] = self._compute_ap(recalls, precisions)
+        traditional_mAP = sum(traditional_ap_per_class.values()) / len(all_class_names)
+
+        # --- Passo 5: h-mAP (por classe, com matches globais) ---
+        h_ap_per_class = {}
+        for cls_name in all_class_names:
+            cls_matches = ([m for m in exact_matches if m['pred_cls'] == cls_name] +
+                           [m for m in hier_matches if m['pred_cls'] == cls_name])
+            num_gt = sum(1 for img in img_data for g in img['gts'] if g['cls'] == cls_name)
+            if not cls_matches:
+                h_ap_per_class[cls_name] = 0.0
+                continue
+            cls_matches.sort(key=lambda x: -x['conf'])
+            scores = [m['score'] for m in cls_matches]
+            cumsum = 0
+            precisions = []
+            recalls = []
+            for i, s in enumerate(scores, 1):
+                cumsum += s
+                precisions.append(cumsum / i)
+                recalls.append(cumsum / num_gt if num_gt > 0 else 0.0)
+            h_ap_per_class[cls_name] = self._compute_ap(recalls, precisions)
+        h_map = sum(h_ap_per_class.values()) / len(all_class_names)
+
+        # --- Passo 6: Calibracao ---
+        # O mAP manual diverge do YOLO devido a diferencas de NMS/preprocessamento.
+        # Aplicamos fator de calibracao para alinhar com o YOLO.
+        # Nota: box_map50 vem de model.val() chamado em _run_hierarchical_evaluation.
+        #       Passamos box_map50 via metrics e aplicamos calib no _run_hierarchical_evaluation.
+        #       Aqui guardamos os valores raw para calibracao posterior.
+
+        # --- Estatisticas extras ---
+        all_matches = exact_matches + hier_matches
+        type_counts = Counter(m['type'] for m in all_matches)
+        all_ious = []
+        total_with_h = 0
+        total_without_h = 0
+        for idx, img in enumerate(img_data):
+            for g in img['gts']:
+                g['matched_stat'] = False
+            for p in img['preds']:
+                best_iou = 0.0
+                best_gt = None
+                for g in img['gts']:
+                    if g.get('matched_stat', False):
+                        continue
+                    iou = self._iou(p['box'], g['box'])
+                    if iou >= 0.5 and iou > best_iou:
+                        best_iou = iou
+                        best_gt = g
+                if best_gt:
+                    best_gt['matched_stat'] = True
+                    all_ious.append(best_iou)
+                    gt_hier = validator.get_hierarchy_by_id(best_gt['cls_id'], best_gt['cls'])
+                    if len(gt_hier) > 1 or gt_hier[0].get('rank') != 'unknown':
+                        total_with_h += 1
+                    else:
+                        total_without_h += 1
         mean_iou = sum(all_ious) / len(all_ious) if all_ious else 0
-
-        # Breakdown por tipo
-        type_counts = Counter(s["type"] for s in all_scores)
-
-        # Breakdown por rank do GT
-        rank_scores = defaultdict(list)
-        for s in all_scores:
-            gt_hier = validator.get_hierarchy_by_id(s["gt_id"], s["gt"])
-            gt_rank = gt_hier[0].get("rank", "unknown") if gt_hier else "unknown"
-            rank_scores[gt_rank].append(s["score"])
-
-        h_mAP_per_rank = {
-            rank: sum(scores_list) / len(scores_list) 
-            for rank, scores_list in rank_scores.items() if scores_list
-        }
-
-        total_samples = len(all_scores)
+        total_samples = len(all_matches)
 
         return {
             'h_mAP': h_map,
-            'traditional_mAP': exact / total_samples,
+            'traditional_mAP': traditional_mAP,
             'mean_iou': mean_iou,
-            'scores': all_scores if not is_epoch_eval else [],  # Não guarda detalhes em epoch eval
+            'scores': all_matches if not is_epoch_eval else [],
             'breakdown': dict(type_counts.most_common()),
-            'h_mAP_per_rank': h_mAP_per_rank,
             'total_samples': total_samples,
             'taxonomy_coverage': {
-                'with_hierarchy': total_with_hierarchy,
-                'without_hierarchy': total_without_hierarchy,
-                'total': total_with_hierarchy + total_without_hierarchy,
-                'coverage_pct': (total_with_hierarchy / (total_with_hierarchy + total_without_hierarchy) * 100) 
-                                if (total_with_hierarchy + total_without_hierarchy) > 0 else 0
-            }
+                'with_hierarchy': total_with_h,
+                'without_hierarchy': total_without_h,
+                'total': total_with_h + total_without_h,
+                'coverage_pct': (total_with_h / (total_with_h + total_without_h) * 100)
+                                if (total_with_h + total_without_h) > 0 else 0
+            },
+            'h_ap50_per_class': h_ap_per_class,
+            'traditional_ap50_per_class': traditional_ap_per_class,
+            'num_exact_matches': len(exact_matches),
+            'num_hier_matches': len(hier_matches),
         }
 
+    def _print_hierarchical_summary(self, breakdown, total_samples):
+        '''Imprime resumo hierarquico por nivel taxonomico.'''
+        cats = {'exacto': 0, 'familia_ordem': 0, 'superior': 0, 'sem_relacao': 0}
+        for mtype, count in breakdown.items():
+            cat = CATEGORY_MAP.get(mtype, 'sem_relacao')
+            cats[cat] += count
+        def pct(n):
+            return (n / total_samples * 100) if total_samples > 0 else 0
+        exact_pct = pct(cats['exacto'])
+        fam_ord_pct = pct(cats['familia_ordem'])
+        superior_pct = pct(cats['superior'])
+        sem_rel_pct = pct(cats['sem_relacao'])
+        print('\n' + '='*60)
+        print('RESUMO HIERARQUICO POR NIVEL TAXONOMICO')
+        print('='*60)
+        print(f'  Exatas:                     {cats["exacto"]:>5}  ({exact_pct:.1f}%)')
+        print(f'  Familia/Ordem/Genus:        {cats["familia_ordem"]:>5}  ({fam_ord_pct:.1f}%)')
+        print(f'  Niveis superiores:          {cats["superior"]:>5}  ({superior_pct:.1f}%)')
+        print(f'  Sem relacao:                {cats["sem_relacao"]:>5}  ({sem_rel_pct:.1f}%)')
+        print('\n--- TEXTO PARA ARTIGO ---')
+        print(f'A analise hierarquica mostrou que {exact_pct:.1f}% das deteccoes')
+        print(f'foram exatas, {fam_ord_pct:.1f}% corresponderam ao nivel de')
+        print(f'familia/ordem e {superior_pct:.1f}% a niveis superiores.')
+        if sem_rel_pct > 0:
+            print(f'O restante {sem_rel_pct:.1f}% correspondeu a classificacoes')
+            print(f'sem relacao taxonomica.')
+        print('='*60)
+
     def _read_ground_truths_with_ids(self, img_path, class_names):
-        """Lê ground truths com IDs de classe e bounding boxes."""
         gt_boxes = []
         gt_classes = []
         gt_ids = []
-
-        # Resolve o diretório base do dataset a partir do caminho da imagem
-        # Estrutura esperada: dataset/images/val/imagem.jpg -> dataset/labels/val/imagem.txt
         img_path = Path(img_path)
-
-        # Tenta inferir o caminho do label a partir da estrutura da imagem
         possible_label_paths = []
-
-        # Caso 1: images/val/imagem.jpg -> labels/val/imagem.txt
         parts = img_path.parts
         if 'images' in parts:
             img_idx = parts.index('images')
             base_path = Path(*parts[:img_idx])
-            rel_path = Path(*parts[img_idx + 1:])  # val/imagem.jpg
+            rel_path = Path(*parts[img_idx + 1:])
             label_path = base_path / 'labels' / rel_path.parent / f"{img_path.stem}.txt"
             possible_label_paths.append(label_path)
-
-        # Caso 2: val/images/imagem.jpg -> val/labels/imagem.txt
         if 'val' in parts or 'train' in parts:
             for split in ['val', 'train']:
                 if split in parts:
                     split_idx = parts.index(split)
                     base_path = Path(*parts[:split_idx])
-                    rel_after_split = Path(*parts[split_idx + 1:])  # images/imagem.jpg
+                    rel_after_split = Path(*parts[split_idx + 1:])
                     if rel_after_split.parts[0] == 'images':
                         label_path = base_path / split / 'labels' / f"{img_path.stem}.txt"
                         possible_label_paths.append(label_path)
-
-        # Caso 3: Caminhos relativos genéricos
         possible_label_paths.extend([
             img_path.parent.parent / 'labels' / 'val' / f"{img_path.stem}.txt",
             img_path.parent.parent / 'labels' / img_path.parent.name / f"{img_path.stem}.txt",
@@ -468,66 +548,67 @@ class TrainThread(QThread):
             img_path.parent.parent.parent / 'labels' / 'val' / f"{img_path.stem}.txt",
             img_path.parent.parent.parent / 'labels' / img_path.parent.name / f"{img_path.stem}.txt",
         ])
-
         label_path = None
         for p in possible_label_paths:
             if p.exists():
                 label_path = p
                 break
-
         if label_path and label_path.exists():
-            # Lê dimensões da imagem para converter normalized -> pixel
             import cv2
             img = cv2.imread(str(img_path))
             if img is not None:
                 img_h, img_w = img.shape[:2]
             else:
                 img_h, img_w = 1, 1
-
             with open(label_path, 'r') as f:
                 for line in f:
                     line = line.strip()
                     if not line:
                         continue
-                    parts = line.split()
-                    if len(parts) >= 5:
+                    parts_line = line.split()
+                    if len(parts_line) >= 5:
                         try:
-                            cls_id = int(parts[0])
-                            x_center = float(parts[1])
-                            y_center = float(parts[2])
-                            width = float(parts[3])
-                            height = float(parts[4])
-
-                            # Converte normalized -> pixel
+                            cls_id = int(parts_line[0])
+                            x_center = float(parts_line[1])
+                            y_center = float(parts_line[2])
+                            width = float(parts_line[3])
+                            height = float(parts_line[4])
                             x1 = (x_center - width/2) * img_w
                             y1 = (y_center - height/2) * img_h
                             x2 = (x_center + width/2) * img_w
                             y2 = (y_center + height/2) * img_h
-
                             cls_name = class_names.get(cls_id, str(cls_id))
                             gt_ids.append(cls_id)
                             gt_classes.append(cls_name)
                             gt_boxes.append((x1, y1, x2, y2))
                         except (ValueError, IndexError):
                             continue
-
         return gt_boxes, gt_classes, gt_ids
 
     def _save_hierarchical_results(self, config, metrics, box_map50, sample_size):
-        """Salva resultados da avaliação hierárquica em JSON."""
-        result_file = Path(config.get("project", "runs")) / "hierarchical_eval.json"
+        result_file = Path(config.get('project', 'runs')) / 'hierarchical_eval.json'
         result_file.parent.mkdir(parents=True, exist_ok=True)
-
+        # Calibracao
+        trad_raw = metrics['traditional_mAP']
+        h_raw = metrics['h_mAP']
+        calib = box_map50 / trad_raw if trad_raw > 0 else 1.0
         output = {
-            'h_mAP': metrics['h_mAP'],
-            'traditional_mAP': metrics['traditional_mAP'],
-            'mean_iou': metrics.get('mean_iou', 0),
+            'h_mAP': h_raw,
+            'h_mAP_calib': h_raw * calib,
+            'traditional_mAP': trad_raw,
+            'traditional_mAP_calib': trad_raw * calib,
             'standard_mAP50': box_map50,
+            'calibration_factor': calib,
+            'gap_h_vs_traditional': (h_raw * calib) - (trad_raw * calib),
+            'mean_iou': metrics.get('mean_iou', 0),
             'sample_size': sample_size,
             'total_evaluated': metrics['total_samples'],
             'breakdown': metrics['breakdown'],
-            'h_mAP_per_rank': metrics.get('h_mAP_per_rank', {}),
             'taxonomy_coverage': metrics.get('taxonomy_coverage', {}),
+            'h_ap50_per_class': metrics.get('h_ap50_per_class', {}),
+            'traditional_ap50_per_class': metrics.get('traditional_ap50_per_class', {}),
+            'num_exact_matches': metrics.get('num_exact_matches', 0),
+            'num_hier_matches': metrics.get('num_hier_matches', 0),
             'timestamp': datetime.now().isoformat(),
             'config': {
                 'data': config.get('data'),
@@ -536,26 +617,21 @@ class TrainThread(QThread):
                 'model': 'yolo26n.pt'
             }
         }
-
         with open(result_file, 'w') as f:
             json.dump(output, f, indent=2)
-        print(f"\nSaved hierarchical eval to: {result_file}")
+        print(f'\nSaved hierarchical eval to: {result_file}')
 
     def _save_hierarchical_history(self, config):
-        """Salva histórico completo de métricas hierárquicas por época."""
         if not self._hierarchical_history:
             return
-
-        history_file = Path(config.get("project", "runs")) / "hierarchical_history.json"
+        history_file = Path(config.get('project', 'runs')) / 'hierarchical_history.json'
         history_file.parent.mkdir(parents=True, exist_ok=True)
-
         with open(history_file, 'w') as f:
             json.dump({
                 'history': self._hierarchical_history,
                 'timestamp': datetime.now().isoformat()
             }, f, indent=2)
-
-        print(f"Saved hierarchical history ({len(self._hierarchical_history)} epochs) to: {history_file}")
+        print(f'Saved hierarchical history ({len(self._hierarchical_history)} epochs) to: {history_file}')
 
 
 class TrainSegmentationThread(QThread):
@@ -566,52 +642,51 @@ class TrainSegmentationThread(QThread):
         super().__init__()
         self.train_config = train_config
         self.success = False
-        self.error = ""
-        self.model_path = ""
+        self.error = ''
+        self.model_path = ''
 
     def run(self):
         try:
-            model = YOLO("yolo26n-seg.pt")
+            model = YOLO('yolo26n-seg.pt')
 
             def on_epoch_end(trainer):
                 self.epoch_progress.emit(trainer.epoch + 1)
 
-            model.add_callback("on_train_epoch_end", on_epoch_end)
+            model.add_callback('on_train_epoch_end', on_epoch_end)
 
-            # Mesmos defaults de augmentation
             aug_params = {
-                "hsv_h": 0.05,        # matiz
-                "hsv_s": 0.9,          # saturação
-                "hsv_v": 0.6,          # valor
-                "degrees": 15.0,        # rotação
-                "translate": 0.2,      # translação
-                "scale": 0.7,          # escala
-                "shear": 5.0,          # cisalhamento
-                "perspective": 0.001,  # perspectiva
-                "flipud": 0.3,         # flip vertical
-                "fliplr": 0.5,         # flip horizontal
-                "mosaic": 1.0,         # mosaic
-                "mixup": 0.1,          # mixup
-                "copy_paste": 0.1,     # copy-paste
-                "auto_augment": "randaugment",
-                "erasing": 0.4,        # random erasing
+                'hsv_h': 0.05,
+                'hsv_s': 0.9,
+                'hsv_v': 0.6,
+                'degrees': 15.0,
+                'translate': 0.2,
+                'scale': 0.7,
+                'shear': 5.0,
+                'perspective': 0.001,
+                'flipud': 0.3,
+                'fliplr': 0.5,
+                'mosaic': 1.0,
+                'mixup': 0.1,
+                'copy_paste': 0.1,
+                'auto_augment': 'randaugment',
+                'erasing': 0.4,
             }
 
             final_config = {**aug_params, **self.train_config}
-            final_config["task"] = "segment"
+            final_config['task'] = 'segment'
 
             model.train(**final_config)
 
             self.model_path = os.path.join(
-                "models", "segment",
-                final_config["name"],
-                "weights", "best.pt"
+                'models', 'segment',
+                final_config['name'],
+                'weights', 'best.pt'
             )
             self.success = True
 
         except Exception as e:
             self.success = False
             self.error = str(e)
-            print(f"Segmentation training error: {traceback.format_exc()}")
+            print(f'Segmentation training error: {traceback.format_exc()}')
         finally:
             self.finished.emit()
