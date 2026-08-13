@@ -409,13 +409,31 @@ class VideoAnnotator(QMainWindow):
             self._toolbar_buttons.append(btn)
 
     def _apply_info_panel_style(self, color_hex=None):
-        """Aplica estilo ao painel informativo."""
-        colors = DEFAULT_INFO_COLORS.copy()
-        if color_hex:
-            colors["fg"] = color_hex
-            colors["bg"] = color_hex
-            colors["border"] = color_hex
-        self.info_panel.setStyleSheet(INFO_PANEL_STYLE.format(**colors))
+        """Aplica estilo ao painel informativo. Texto sempre branco."""
+        # Fallback: se cor inválida/branca, usa azul padrão
+        if not color_hex or not isinstance(color_hex, str) or not color_hex.startswith("#"):
+            color_hex = "#1565C0"
+        c = color_hex.strip().upper()
+        if c in ("#FFFFFF", "#FFF", "WHITE", ""):
+            color_hex = "#1565C0"
+        else:
+            try:
+                r = int(c[1:3], 16); g = int(c[3:5], 16); b = int(c[5:7], 16)
+                if (0.299*r + 0.587*g + 0.114*b) / 255.0 > 0.82:
+                    color_hex = "#1565C0"
+            except Exception:
+                color_hex = "#1565C0"
+        self.info_panel.setStyleSheet(f"""
+            QLabel {{
+                background-color: {color_hex};
+                color: #FFFFFF;
+                border-radius: 4px;
+                padding: 4px 12px;
+                font-size: 13px;
+                font-weight: bold;
+                min-height: 28px;
+            }}
+        """)
 
     def init_taxon_grid(self):
         """Inicializa o grid de taxons."""
@@ -938,8 +956,22 @@ class VideoAnnotator(QMainWindow):
     def change_drawing_class(self, name):
         """Altera a classe ativa para anotação manual."""
         self.video_label.current_class = name
-        hue = hash(name) % 360
-        self.video_label.drawing_color = QColor.fromHsv(hue, 255, 200)
+
+        # --- CORES FIXAS DO SEAFLOOR (pt + en) ---
+        seafloor_colors = {
+            "Sedimento": "#8B4513", "Sediment": "#8B4513",
+            "Coral_Fragmento": "#FF8C00", "Coral Fragment": "#FF8C00",
+            "Recife_Coral": "#00CED1", "Coral Reef": "#00CED1",
+        }
+
+        if name in seafloor_colors:
+            self.video_label.drawing_color = QColor(seafloor_colors[name])
+        else:
+            # HSV controlado: saturação alta, valor moderado → NUNCA branco
+            hue = abs(hash(name)) % 360
+            sat = 180 + (abs(hash(name + "_sat")) % 75)   # 180–255
+            val = 140 + (abs(hash(name + "_val")) % 80)   # 140–220
+            self.video_label.drawing_color = QColor.fromHsv(hue, sat, val)
 
         if name not in self.custom_classes and (not self.model or name not in self.model.names.values()):
             self.custom_classes.append(name)
@@ -1587,6 +1619,7 @@ class VideoAnnotator(QMainWindow):
         # Se não vai rodar modelo, reutiliza o último frame plotado (evita piscar)
         if not should_run_model:
             if self._last_plotted_result is not None:
+                
                 return self._last_plotted_result.copy()
             return frame
 
@@ -2877,7 +2910,7 @@ class VideoAnnotator(QMainWindow):
             return
 
         if self.seafloor_classifier is None:
-            self.seafloor_classifier = SeafloorClassifier(normalize_colors=False, fast_mode=True)
+            self.seafloor_classifier = SeafloorClassifier(normalize_colors=False, fast_mode=True, language=self.language)
 
         if not self.seafloor_classifier.has_trained_model():
             model_path = self.seafloor_training_dir / "seafloor_model.pt"
@@ -2903,9 +2936,11 @@ class VideoAnnotator(QMainWindow):
 
     def _display_seafloor_result(self, frame, result):
         """Exibe resultado de classificação de seafloor no frame."""
-        class_name = result["class_name"]
+        class_name = result["class_name"]      # já traduzido
         confidence = result["confidence"]
-        color_hex = result["color"]
+        # Usa internal_name para buscar cor, com fallback seguro
+        internal_name = result.get("internal_name", class_name)
+        color_hex = result.get("color") or self.seafloor_classifier.class_colors.get(internal_name, "#1565C0")
         color_rgb = tuple(int(color_hex[i:i+2], 16) for i in (1, 3, 5))
         color_bgr = (color_rgb[2], color_rgb[1], color_rgb[0])
 
@@ -2932,7 +2967,7 @@ class VideoAnnotator(QMainWindow):
 
         if enabled:
             if self.seafloor_classifier is None:
-                self.seafloor_classifier = SeafloorClassifier(normalize_colors=False, fast_mode=True)
+                self.seafloor_classifier = SeafloorClassifier(normalize_colors=False, fast_mode=True, language=self.language)
 
             if not self.seafloor_classifier.has_trained_model():
                 model_path = self.seafloor_training_dir / "seafloor_model.pt"
@@ -2968,8 +3003,15 @@ class VideoAnnotator(QMainWindow):
         self.current_seafloor_result = result
         class_name = result["class_name"]
         confidence = result["confidence"]
-        color_hex = result.get("color", "#1565C0")
+        internal_name = result.get("internal_name", class_name)
         shortcut = result.get("shortcut", "")
+        # Cor oficial hardcoded — nunca falha, nunca branca
+        OFFICIAL_COLORS = {
+            "Sedimento": "#941363", "Sediment": "#941363",
+            "Coral_Fragmento": "#0E7607", "Coral Fragment": "#0E7607",
+            "Recife_Coral": "#1F00D1", "Coral Reef": "#1F00D1",
+        }
+        color_hex = OFFICIAL_COLORS.get(internal_name) or OFFICIAL_COLORS.get(class_name, "#1565C0")
 
         self.status_label.setText(self.texts.get("seafloor_label", "Seafloor: {} ({:.2f})").format(class_name, confidence))
         label_text = f" [{shortcut}] {class_name}: {confidence:.2f}" if shortcut else f" {class_name}: {confidence:.2f}"
@@ -3015,9 +3057,25 @@ class VideoAnnotator(QMainWindow):
         self.seafloor_annotation_start_frame = self.current_frame_num
         self.seafloor_frame_counter = 0
 
+        # Busca cor: primeiro no classificador, depois no mapping fixo
         color_hex = None
-        if self.seafloor_classifier and class_name in self.seafloor_classifier.class_colors:
-            color_hex = self.seafloor_classifier.class_colors[class_name]
+        if self.seafloor_classifier:
+            color_hex = self.seafloor_classifier.class_colors.get(class_name)
+            # Fallback: tentar nome em português se o classificador normalizou
+            if not color_hex and class_name == "Coral Reef":
+                color_hex = self.seafloor_classifier.class_colors.get("Recife_Coral")
+            elif not color_hex and class_name == "Sediment":
+                color_hex = self.seafloor_classifier.class_colors.get("Sedimento")
+            elif not color_hex and class_name == "Coral Fragment":
+                color_hex = self.seafloor_classifier.class_colors.get("Coral_Fragmento")
+        # Fallback final: cores oficiais fixas
+        if not color_hex:
+            official = {
+                "Sedimento": "#8B4513", "Sediment": "#8B4513",
+                "Coral_Fragmento": "#FF8C00", "Coral Fragment": "#FF8C00",
+                "Recife_Coral": "#00CED1", "Coral Reef": "#00CED1",
+            }
+            color_hex = official.get(class_name)
 
         self._update_info_panel(f" [{shortcut}] {class_name} — COLETANDO | Shift+S para parar", color_hex=color_hex)
         self.seafloor_collecting = True
@@ -3101,7 +3159,7 @@ class VideoAnnotator(QMainWindow):
     def open_seafloor_class_manager(self):
         """Abre diálogo para gerenciar categorias do classificador de fundo."""
         if self.seafloor_classifier is None:
-            self.seafloor_classifier = SeafloorClassifier(n_clusters=3, normalize_colors=False, fast_mode=True)
+            self.seafloor_classifier = SeafloorClassifier(n_clusters=3, normalize_colors=False, fast_mode=True, language=self.language)
 
         from .seafloor_classifier import SeafloorClassManager
         dialog = SeafloorClassManager(self.seafloor_classifier, self)
@@ -3130,7 +3188,7 @@ class VideoAnnotator(QMainWindow):
         if self.seafloor_classifier is None:
             self.seafloor_classifier = SeafloorClassifier(
                 custom_classes=[n for n in class_names if n not in SeafloorClassifier.FIXED_CLASSES.values()],
-                normalize_colors=False, fast_mode=True
+                normalize_colors=False, fast_mode=True, language=self.language
             )
 
         try:

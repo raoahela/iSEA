@@ -44,24 +44,25 @@ from PyQt6.QtGui import QImage, QPixmap, QColor, QIcon
 from .translations import TEXTS
 
 
-def _t(key, lang="pt", *args):
+def _t(key, lang="en", *args):
     """Translation helper."""
-    text = TEXTS.get(lang, TEXTS["pt"]).get(key, key)
+    text = TEXTS.get(lang, TEXTS["en"]).get(key, key)
     if args:
         return text.format(*args)
     return text
 
 
-def _tc(name, lang="pt"):
-    """Translate class name for display."""
+def _tc(name, lang="en"):
+    """Translate class name for display (bidirecional pt↔en)."""
+    PT_TO_EN = {
+        "Sedimento": "Sediment",
+        "Coral_Fragmento": "Coral Fragment",
+        "Recife_Coral": "Coral Reef"
+    }
+    EN_TO_PT = {v: k for k, v in PT_TO_EN.items()}
     if lang == "en":
-        mapping = {
-            "Sedimento": "Sediment",
-            "Coral_Fragmento": "Coral Fragment",
-            "Recife_Coral": "Coral Reef"
-        }
-        return mapping.get(name, name)
-    return name
+        return PT_TO_EN.get(name, name)
+    return EN_TO_PT.get(name, name)
 
 
 # =============================================================================
@@ -489,18 +490,19 @@ class ManualFeatureExtractor:
 # =============================================================================
 
 class SemiAutoLabeler:
-    def __init__(self, n_examples_per_class=10):
+    def __init__(self, n_examples_per_class=10, language="en"):
         self.n_examples = n_examples_per_class
         self.labels = {}
         self.class_names = {}
         self.deep_feature_extractor = None
+        self.language = language
 
     def set_deep_feature_extractor(self, extractor):
         """Set the deep feature extractor for PCA and k-NN."""
         self.deep_feature_extractor = extractor
 
     def interactive_labeling_qt(self, images, image_names, pca_2d, n_classes, 
-                                 class_names_list=None, parent_widget=None, language="pt"):
+                                 class_names_list=None, parent_widget=None, language="en"):
         """
         INTERACTIVE labeling usando Qt Dialog.
         pca_2d MUST be computed from DEEP FEATURES (InceptionV3), not manual features.
@@ -638,7 +640,7 @@ class InteractiveLabelingDialog(QDialog):
     """Dialog for interactive selection of training examples per class."""
 
     def __init__(self, images, image_names, pca_2d, class_name, class_id,
-                 n_examples, parent=None, language="pt"):
+                 n_examples, parent=None, language="en"):
         super().__init__(parent)
         self.images = images
         self.image_names = image_names
@@ -647,6 +649,7 @@ class InteractiveLabelingDialog(QDialog):
         self.class_id = class_id
         self.n_examples = n_examples
         self.selected_indices = []
+        self.language = language
 
         self.setWindowTitle(_t("select_examples_title", self.language, _tc(class_name, self.language)))
         self.resize(900, 700)
@@ -854,11 +857,12 @@ class FastInceptionV3Classifier:
     - Early stopping with patience
     - Only Mixed_7b + Mixed_7c unfrozen for fine-tuning
     """
-    def __init__(self, n_classes, device=None):
+    def __init__(self, n_classes, device=None, language="en"):
         self.n_classes = n_classes
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = None
         self.best_val_acc = 0.0
+        self.language = language
 
         # Transforms (no resize - images already 299x299)
         self.train_transform = transforms.Compose([
@@ -1229,7 +1233,12 @@ class SeafloorClassifier:
     FIXED_COLORS = {
         "Sedimento": "#8B4513",
         "Coral_Fragmento": "#FF8C00",
-        "Recife_Coral": "#00CED1"
+        "Recife_Coral": "#0E00D1"
+    }
+
+    # Mapeamento de nomes de exibição: nome interno → nome mostrado na UI
+    DISPLAY_NAME_MAP = {
+        "Coral_Vivo": "Recife_Coral",
     }
 
     CUSTOM_SHORTCUTS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]
@@ -1244,7 +1253,7 @@ class SeafloorClassifier:
                  entropy_margin=0.3,
                  custom_classes=None,
                  custom_colors=None,
-                 language="pt"):
+                 language="en"):
 
         # Inicializar classes fixas
         self.fixed_class_names = list(self.FIXED_CLASSES.values())
@@ -1289,7 +1298,7 @@ class SeafloorClassifier:
         self.deep_feature_extractor = DeepFeatureExtractor()
 
         # Labeler now uses deep features
-        self.labeler = SemiAutoLabeler(n_examples_per_class=n_examples_per_class)
+        self.labeler = SemiAutoLabeler(n_examples_per_class=n_examples_per_class, language=self.language)
         self.labeler.set_deep_feature_extractor(self.deep_feature_extractor)
 
         self.trained_classifier = None
@@ -1308,9 +1317,39 @@ class SeafloorClassifier:
         self._refresh_cluster_dirs()
 
     def _generate_color(self, name):
-        hue = hash(name) % 360 / 360.0
-        rgb = colorsys.hsv_to_rgb(hue, 0.8, 0.9)
+        hue = abs(hash(name)) % 360 / 360.0
+        sat = 0.75 + (abs(hash(name + "_s")) % 25) / 100.0  # 0.75–1.0
+        val = 0.55 + (abs(hash(name + "_v")) % 20) / 100.0  # 0.55–0.75 (nunca branco)
+        rgb = colorsys.hsv_to_rgb(hue, sat, val)
         return '#{:02x}{:02x}{:02x}'.format(int(rgb[0]*255), int(rgb[1]*255), int(rgb[2]*255))
+
+    def _migrate_class_names(self, data_dict):
+        """Migra nomes de classes antigos para os novos oficiais."""
+        MIGRATIONS = {
+            "Coral_Vivo": "Recife_Coral",
+        }
+        def migrate_value(v):
+            if isinstance(v, str):
+                return MIGRATIONS.get(v, v)
+            return v
+        def migrate_dict(d):
+            if not isinstance(d, dict):
+                return d
+            new_d = {}
+            for k, v in d.items():
+                new_k = MIGRATIONS.get(k, k)
+                if isinstance(v, dict):
+                    new_d[new_k] = migrate_dict(v)
+                elif isinstance(v, list):
+                    new_d[new_k] = [migrate_value(x) for x in v]
+                else:
+                    new_d[new_k] = migrate_value(v)
+            return new_d
+        def migrate_list(lst):
+            return [migrate_value(x) for x in lst]
+        if isinstance(data_dict, dict):
+            return migrate_dict(data_dict)
+        return data_dict
 
     def _refresh_cluster_dirs(self):
         for i in range(self.n_clusters):
@@ -1350,6 +1389,26 @@ class SeafloorClassifier:
         self._refresh_cluster_dirs()
         return True, shortcut, _t("category_added_with_shortcut", self.language, name, shortcut)
 
+    def rename_class(self, old_name, new_name):
+        """Renomeia uma classe existente (custom ou fixa no display)."""
+        # Atualizar class_names
+        if old_name in self.class_names:
+            idx = self.class_names.index(old_name)
+            self.class_names[idx] = new_name
+        # Atualizar custom_classes
+        for shortcut, name in list(self.custom_classes.items()):
+            if name == old_name:
+                self.custom_classes[shortcut] = new_name
+        # Mover cor
+        if old_name in self.custom_colors:
+            self.custom_colors[new_name] = self.custom_colors.pop(old_name)
+        if old_name in self.class_colors:
+            self.class_colors[new_name] = self.class_colors.pop(old_name)
+        # Registrar no display map para persistência
+        self.DISPLAY_NAME_MAP[old_name] = new_name
+        self.entropy_classifier.class_names = self.class_names
+        return True
+
     def remove_custom_class(self, name_or_shortcut):
         name = name_or_shortcut
         if name_or_shortcut in self.custom_classes:
@@ -1382,10 +1441,15 @@ class SeafloorClassifier:
     def list_all_classes(self):
         result = []
         for shortcut, name in self.FIXED_CLASSES.items():
+            # Fallback: se por algum motivo a cor não existir, gera uma
+            color = self.fixed_colors.get(name)
+            if color is None:
+                color = self.FIXED_COLORS.get(name, self._generate_color(name))
+                self.fixed_colors[name] = color
             result.append({
                 "shortcut": shortcut, "name": _tc(name, self.language),
                 "internal_name": name,
-                "color": self.fixed_colors[name], "type": "fixed"
+                "color": color, "type": "fixed"
             })
         for shortcut, name in self.custom_classes.items():
             result.append({
@@ -1417,6 +1481,8 @@ class SeafloorClassifier:
     def load_config(self, path):
         with open(path, 'r', encoding='utf-8') as f:
             config = json.load(f)
+        # Migrar nomes antigos → novos
+        config = self._migrate_class_names(config)
         self.custom_classes = config.get("custom_classes", {})
         self.custom_colors = config.get("custom_colors", {})
         self.class_names = config.get("class_names", self.fixed_class_names)
@@ -1475,6 +1541,7 @@ class SeafloorClassifier:
             "normalize_colors": self.normalize_colors,
             "use_adaptive_ensemble": self.use_adaptive_ensemble,
             "entropy_margin": self.entropy_margin,
+            "display_name_map": self.DISPLAY_NAME_MAP,
             "ref_mean": self.normalizer.ref_mean.tolist() if (self.normalizer and self.normalizer.ref_mean is not None) else None,
             "ref_std": self.normalizer.ref_std.tolist() if (self.normalizer and self.normalizer.ref_std is not None) else None,
             "reference_path": str(self.normalizer.reference_path) if self.normalizer else None,
@@ -1488,6 +1555,8 @@ class SeafloorClassifier:
         if not path.exists():
             raise FileNotFoundError(_t("model_not_found", self.language, path))
         checkpoint = torch.load(str(path), map_location="cpu", weights_only=True)
+        # Migrar nomes antigos → novos em todo o checkpoint
+        checkpoint = self._migrate_class_names(checkpoint)
         self.class_names = checkpoint.get("class_names", self.class_names)
         self.class_colors = checkpoint.get("class_colors", self.class_colors)
         self.custom_classes = checkpoint.get("custom_classes", {})
@@ -1500,6 +1569,7 @@ class SeafloorClassifier:
         self.normalize_colors = checkpoint.get("normalize_colors", self.normalize_colors)
         self.use_adaptive_ensemble = checkpoint.get("use_adaptive_ensemble", self.use_adaptive_ensemble)
         self.entropy_margin = checkpoint.get("entropy_margin", self.entropy_margin)
+        self.DISPLAY_NAME_MAP = checkpoint.get("display_name_map", self.DISPLAY_NAME_MAP)
         ref_mean = checkpoint.get("ref_mean")
         ref_std = checkpoint.get("ref_std")
         ref_path = checkpoint.get("reference_path")
@@ -1510,10 +1580,65 @@ class SeafloorClassifier:
             self.normalizer.ref_std = np.array(ref_std, dtype=np.float32)
         n_classes = checkpoint.get("n_classes", len(self.class_names))
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.trained_classifier = FastInceptionV3Classifier(n_classes=n_classes, device=device)
+        self.trained_classifier = FastInceptionV3Classifier(n_classes=n_classes, device=device, language=self.language)
         self.trained_classifier._build_model(freeze_backbone=False)
         self.trained_classifier.model.load_state_dict(checkpoint["model_state_dict"])
         self.trained_classifier.model.eval()
+
+        # Normalizar nomes de classes para português (internal standard)
+        name_map = {}  # old_name -> new_name
+        normalized_names = []
+        for name in self.class_names:
+            new_name = _tc(name, "pt")
+            name_map[name] = new_name
+            normalized_names.append(new_name)
+        self.class_names = normalized_names
+
+        # Normalizar chaves de custom_colors para português
+        normalized_custom_colors = {}
+        for old_name, color in self.custom_colors.items():
+            new_name = name_map.get(old_name, _tc(old_name, "pt"))
+            normalized_custom_colors[new_name] = color
+        self.custom_colors = normalized_custom_colors
+
+        # Normalizar chaves de custom_classes para português
+        normalized_custom_classes = {}
+        for shortcut, old_name in self.custom_classes.items():
+            new_name = name_map.get(old_name, _tc(old_name, "pt"))
+            normalized_custom_classes[shortcut] = new_name
+        self.custom_classes = normalized_custom_classes
+
+        # FORÇAR cores oficiais para classes fixas (sobrescreve TUDO do checkpoint)
+        self.fixed_colors = dict(self.FIXED_COLORS)
+        self.class_colors = {}
+        for name, color in self.fixed_colors.items():
+            self.class_colors[name] = color
+        for name, color in self.custom_colors.items():
+            self.class_colors[name] = color
+
+        # Garante que TODAS as classes tenham cor e NUNCA seja branca
+        OFFICIAL = {
+            "Sedimento": "#8B4513",
+            "Coral_Fragmento": "#FF8C00",
+            "Recife_Coral": "#00339A",
+        }
+        for name in self.class_names:
+            # Prioridade: cor oficial > cor no class_colors > gerar nova
+            official_color = OFFICIAL.get(name)
+            if official_color:
+                self.class_colors[name] = official_color
+            else:
+                existing = self.class_colors.get(name)
+                if not existing or existing.strip().upper() in ("#00518A"):
+                    self.class_colors[name] = self._generate_color(name)
+
+        # Garante que fixed_colors sempre tenha as classes fixas base
+        for shortcut, name in self.FIXED_CLASSES.items():
+            if name not in self.fixed_colors:
+                self.fixed_colors[name] = self.FIXED_COLORS.get(
+                    name, self._generate_color(name)
+                )
+
         self.entropy_classifier.class_names = self.class_names
         print(_t("model_loaded_from", self.language, path))
         print(_t("classes_list", self.language, [_tc(n, self.language) for n in self.class_names]))
@@ -1538,13 +1663,30 @@ class SeafloorClassifier:
         confidence = float(confs[0])
         if class_id >= len(self.class_names):
             class_id = len(self.class_names) - 1
-        class_name = self.class_names[class_id]
+        internal_name = self.class_names[class_id]  # nome interno (pt, normalizado)
+        # Aplicar mapeamento de display se existir
+        display_name = self.DISPLAY_NAME_MAP.get(internal_name, internal_name)
+        # Cor oficial hardcoded — nunca falha, nunca branca
+        OFFICIAL = {
+            "Sedimento": "#8B4513",
+            "Coral_Fragmento": "#FF8C00",
+            "Recife_Coral": "#2300D1",
+        }
+        color = OFFICIAL.get(display_name) or OFFICIAL.get(internal_name)
+        if not color:
+            color = self.class_colors.get(display_name) or self.class_colors.get(internal_name, "#1565C0")
+        # Proteção final: nunca branco
+        if color and isinstance(color, str):
+            c = color.strip().upper()
+            if c in ("#FFFFFF", "#FFF", "WHITE", ""):
+                color = "#1565C0"
         return {
             "class_id": class_id,
-            "class_name": _tc(class_name, self.language),
+            "class_name": _tc(display_name, self.language),
+            "internal_name": internal_name,
             "confidence": confidence,
-            "color": self.class_colors.get(class_name, "#FFFFFF"),
-            "shortcut": self.get_shortcut_for_class(class_name)
+            "color": color,
+            "shortcut": self.get_shortcut_for_class(internal_name)
         }
 
 
@@ -1713,7 +1855,7 @@ class SeafloorClassifier:
 
         n_classes = len(np.unique(y_train_bal))
 
-        classifier = FastInceptionV3Classifier(n_classes=n_classes)
+        classifier = FastInceptionV3Classifier(n_classes=n_classes, language=self.language)
         classifier.train_two_phase(X_train_bal, y_train_bal, X_val, y_val, 
                                     progress_callback=_progress)
 
@@ -2038,6 +2180,7 @@ class SeafloorClassificationThread(QThread):
     def __init__(self, classifier: SeafloorClassifier, parent=None):
         super().__init__(parent)
         self.classifier = classifier
+        self.language = getattr(classifier, 'language', 'en') 
         self.frames = []
         self.mode = "batch"
         self.running = True
@@ -2201,7 +2344,7 @@ class SeafloorClassificationThread(QThread):
 # =============================================================================
 
 class SeafloorClassificationDialog(QDialog):
-    def __init__(self, parent=None, language="pt"):
+    def __init__(self, parent=None, language="en"):
         super().__init__(parent)
         self.language = language
         self.setWindowTitle(_t("seafloor_classification_title", self.language))
@@ -2439,7 +2582,7 @@ class SeafloorClassManager(QDialog):
     def __init__(self, classifier, parent=None, language=None):
         super().__init__(parent)
         self.classifier = classifier
-        self.language = language or getattr(classifier, "language", "pt")
+        self.language = language or getattr(classifier, "language", "en")
         self.setWindowTitle(_t("manage_seafloor_categories", self.language))
         self.resize(450, 550)
         self._build_ui()
