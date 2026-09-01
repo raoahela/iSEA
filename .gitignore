@@ -2,3 +2,7 @@
 **/*.pt
 **/*.onnx
 **/*.engine
+# Modelos treinados gerados automaticamente
+modelos/best_model_fast.pth
+seafloor_output/
+seafloor_training_data/
