@@ -872,7 +872,7 @@ class VideoAnnotator(QMainWindow):
         """Carrega modelo YOLO (padrão ou customizado)."""
         try:
             if model_path is None:
-                self.model_path = r"models\corais.pt"
+                self.model_path = r"modelos\corais.pt"
                 self.model = YOLO(resource_path(self.model_path))
             else:
                 if os.path.exists(model_path):
@@ -2600,7 +2600,7 @@ class VideoAnnotator(QMainWindow):
     def _run_training(self, dataset_dir, manual_annotations=None):
         """Executa o treinamento YOLO com configuração de diálogo."""
         try:
-            models_dir = os.path.join(os.getcwd(), "models")
+            models_dir = os.path.join(os.getcwd(), "modelos")
             os.makedirs(models_dir, exist_ok=True)
 
             name, ok = QInputDialog.getText(self, self.texts["name_model_title"], self.texts["name_model_label"])

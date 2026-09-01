@@ -95,7 +95,7 @@ class TrainThread(QThread):
             self._run_hierarchical_evaluation(model, final_config)
 
             self.model_path = os.path.join(
-                'models', 'detect',
+                'modelos', 'detect',
                 final_config['name'],
                 'weights', 'best.pt'
             )
@@ -684,7 +684,7 @@ class TrainSegmentationThread(QThread):
             model.train(**final_config)
 
             self.model_path = os.path.join(
-                'models', 'segment',
+                'modelos', 'segment',
                 final_config['name'],
                 'weights', 'best.pt'
             )

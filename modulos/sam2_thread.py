@@ -41,7 +41,7 @@ class SAM2Thread(QThread):
     def load_model(self):
         """Carrega o modelo SAM do disco."""
         try:
-            model_path = Path(resource_path("models")) / self.model_name
+            model_path = Path(resource_path("modelos")) / self.model_name
             if not model_path.exists():
                 raise FileNotFoundError(f"Model not found: {model_path}")
 

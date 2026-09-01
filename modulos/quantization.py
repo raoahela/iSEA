@@ -26,6 +26,6 @@ def quantize_fp16_pt(model_path, output_path):
 
 # Uso mais simples possível
 quantize_fp16_pt(
-    r"E:\Raphaela\iSEA\models\corais.pt",
-    r"E:\Raphaela\iSEA\models\corais_fp16.pt"
+    r"E:\Raphaela\iSEA\modelos\corais.pt",
+    r"E:\Raphaela\iSEA\modelos\corais_fp16.pt"
 )
