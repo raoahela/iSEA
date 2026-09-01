@@ -1,12 +1,13 @@
 numpy
 torch
-torchvision 
-torchaudio        
+torchvision
 ultralytics
 opencv-python
 PyYAML
 PyQt6
 pandas
 scikit-image
-lap
-sahi
+scikit-learn
+scipy
+matplotlib
+requests

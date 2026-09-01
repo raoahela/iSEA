@@ -13,40 +13,37 @@ from datetime import datetime
 
 
 # === MAPA DE CATEGORIAS TAXONOMICAS PARA RESUMO ===
+# Agora normalizado ao nivel do GT:
+# - correto: exato OU predicao mais especifica que o GT (descendente correto)
+# - genero, familia, ordem, classe, filo: predicao ancestral no respectivo nivel
+# - superior: kingdom, phylum como ancestral comum ou ancestral direto muito alto
+# - sem_relacao: unrelated, unmatched, name_similarity
 CATEGORY_MAP = {
-    'exact': 'exacto',
-    'common_family': 'familia_ordem',
-    'common_order': 'familia_ordem',
-    'common_genus': 'familia_ordem',
-    'common_species': 'familia_ordem',
-    'ancestor_family': 'familia_ordem',
-    'ancestor_order': 'familia_ordem',
-    'ancestor_genus': 'familia_ordem',
-    'ancestor_species': 'familia_ordem',
-    'descendant_family': 'familia_ordem',
-    'descendant_order': 'familia_ordem',
-    'descendant_genus': 'familia_ordem',
-    'descendant_species': 'familia_ordem',
-    'common_phylum': 'superior',
-    'common_kingdom': 'superior',
-    'common_class': 'superior',
-    'common_gigaclass': 'superior',
-    'common_infraclass': 'superior',
-    'common_superfamily': 'superior',
-    'ancestor_phylum': 'superior',
-    'ancestor_kingdom': 'superior',
-    'ancestor_class': 'superior',
+    'exact': 'correto',
+    'descendant_correct': 'correto',
+    'ancestor_species': 'correto',
+    'ancestor_genus': 'genero',
+    'ancestor_family': 'familia',
+    'ancestor_superfamily': 'familia',
+    'ancestor_order': 'ordem',
+    'ancestor_class': 'classe',
     'ancestor_gigaclass': 'superior',
     'ancestor_infraclass': 'superior',
-    'ancestor_superfamily': 'superior',
-    'descendant_phylum': 'superior',
-    'descendant_kingdom': 'superior',
-    'descendant_class': 'superior',
-    'descendant_gigaclass': 'superior',
-    'descendant_infraclass': 'superior',
-    'descendant_superfamily': 'superior',
+    'ancestor_phylum': 'filo',
+    'ancestor_kingdom': 'superior',
+    'common_species': 'correto',
+    'common_genus': 'genero',
+    'common_family': 'familia',
+    'common_superfamily': 'familia',
+    'common_order': 'ordem',
+    'common_class': 'classe',
+    'common_gigaclass': 'superior',
+    'common_infraclass': 'superior',
+    'common_phylum': 'filo',
+    'common_kingdom': 'superior',
     'unrelated': 'sem_relacao',
     'unmatched': 'sem_relacao',
+    'name_similarity': 'sem_relacao',
 }
 
 
@@ -188,7 +185,6 @@ class TrainThread(QThread):
                         print(f'\nTaxonomy coverage: {cov["coverage_pct"]:.1f}% '
                               f'({cov["with_hierarchy"]}/{cov["total"]} with hierarchy)')
 
-                    # Resumo hierarquico
                     self._print_hierarchical_summary(metrics['breakdown'], metrics['total_samples'])
 
                     self._save_hierarchical_results(config, metrics, box_map50, len(sample))
@@ -277,14 +273,6 @@ class TrainThread(QThread):
 
     def _evaluate_sample(self, model, sample: list, validator: HierarchicalValidator,
                          is_epoch_eval: bool = False) -> dict:
-        '''
-        Avalia amostra calculando mAP50 e h-mAP50 com curva PR real.
-        Matching global em 2 passagens:
-          1. EXACT: todas as predicoes (todas as classes), ordenadas por confianca.
-             Cada predicao so faz match com GT da MESMA classe.
-          2. HIERARQUICO: predicoes restantes, ordenadas por confianca.
-             Faz match com qualquer GT nao-matched.
-        '''
         import numpy as np
         all_class_names = list(model.names.values())
 
@@ -309,7 +297,7 @@ class TrainThread(QThread):
                    for b, c, cid in zip(gt_boxes, gt_classes, gt_ids)]
             img_data.append({'img_path': img_path, 'preds': preds, 'gts': gts})
 
-        # --- Passo 2: MATCHING EXACT GLOBAL ---
+        # --- Passo 2: MATCHING EXATO GLOBAL ---
         all_preds_exact = []
         for img_idx, img in enumerate(img_data):
             for pred_idx, p in enumerate(img['preds']):
@@ -434,11 +422,8 @@ class TrainThread(QThread):
         h_map = sum(h_ap_per_class.values()) / len(all_class_names)
 
         # --- Passo 6: Calibracao ---
-        # O mAP manual diverge do YOLO devido a diferencas de NMS/preprocessamento.
-        # Aplicamos fator de calibracao para alinhar com o YOLO.
-        # Nota: box_map50 vem de model.val() chamado em _run_hierarchical_evaluation.
-        #       Passamos box_map50 via metrics e aplicamos calib no _run_hierarchical_evaluation.
-        #       Aqui guardamos os valores raw para calibracao posterior.
+        trad_raw = metrics['traditional_mAP'] if False else traditional_mAP  # placeholder para definicao abaixo
+        # Calibracao sera aplicada no metodo chamador
 
         # --- Estatisticas extras ---
         all_matches = exact_matches + hier_matches
@@ -491,31 +476,53 @@ class TrainThread(QThread):
         }
 
     def _print_hierarchical_summary(self, breakdown, total_samples):
-        '''Imprime resumo hierarquico por nivel taxonomico.'''
-        cats = {'exacto': 0, 'familia_ordem': 0, 'superior': 0, 'sem_relacao': 0}
+        "Imprime resumo hierarquico por nivel taxonomico, normalizado ao GT."
+        cats = {
+            'correto': 0,
+            'genero': 0,
+            'familia': 0,
+            'ordem': 0,
+            'classe': 0,
+            'filo': 0,
+            'superior': 0,
+            'sem_relacao': 0
+        }
         for mtype, count in breakdown.items():
             cat = CATEGORY_MAP.get(mtype, 'sem_relacao')
             cats[cat] += count
+
         def pct(n):
             return (n / total_samples * 100) if total_samples > 0 else 0
-        exact_pct = pct(cats['exacto'])
-        fam_ord_pct = pct(cats['familia_ordem'])
-        superior_pct = pct(cats['superior'])
-        sem_rel_pct = pct(cats['sem_relacao'])
+
         print('\n' + '='*60)
-        print('RESUMO HIERARQUICO POR NIVEL TAXONOMICO')
+        print('RESUMO HIERARQUICO POR NIVEL TAXONOMICO (NORMALIZADO AO GT)')
         print('='*60)
-        print(f'  Exatas:                     {cats["exacto"]:>5}  ({exact_pct:.1f}%)')
-        print(f'  Familia/Ordem/Genus:        {cats["familia_ordem"]:>5}  ({fam_ord_pct:.1f}%)')
-        print(f'  Niveis superiores:          {cats["superior"]:>5}  ({superior_pct:.1f}%)')
-        print(f'  Sem relacao:                {cats["sem_relacao"]:>5}  ({sem_rel_pct:.1f}%)')
+        print(f'  Correto (exato/descendente): {cats["correto"]:>5}  ({pct(cats["correto"]):.1f}%)')
+        print(f'  Genero (ancestral comum):    {cats["genero"]:>5}  ({pct(cats["genero"]):.1f}%)')
+        print(f'  Familia (ancestral comum):   {cats["familia"]:>5}  ({pct(cats["familia"]):.1f}%)')
+        print(f'  Ordem (ancestral comum):     {cats["ordem"]:>5}  ({pct(cats["ordem"]):.1f}%)')
+        print(f'  Classe (ancestral comum):    {cats["classe"]:>5}  ({pct(cats["classe"]):.1f}%)')
+        print(f'  Filo (ancestral comum):      {cats["filo"]:>5}  ({pct(cats["filo"]):.1f}%)')
+        print(f'  Superior (reino/etc):        {cats["superior"]:>5}  ({pct(cats["superior"]):.1f}%)')
+        print(f'  Sem relacao:                 {cats["sem_relacao"]:>5}  ({pct(cats["sem_relacao"]):.1f}%)')
+
         print('\n--- TEXTO PARA ARTIGO ---')
-        print(f'A analise hierarquica mostrou que {exact_pct:.1f}% das deteccoes')
-        print(f'foram exatas, {fam_ord_pct:.1f}% corresponderam ao nivel de')
-        print(f'familia/ordem e {superior_pct:.1f}% a niveis superiores.')
-        if sem_rel_pct > 0:
-            print(f'O restante {sem_rel_pct:.1f}% correspondeu a classificacoes')
-            print(f'sem relacao taxonomica.')
+        cor = pct(cats['correto'])
+        gen = pct(cats['genero'])
+        fam = pct(cats['familia'])
+        sup = pct(cats['ordem']) + pct(cats['classe']) + pct(cats['filo']) + pct(cats['superior'])
+        sem = pct(cats['sem_relacao'])
+
+        print(f'A analise hierarquica mostrou que {cor:.1f}% das deteccoes')
+        print(f'foram corretas no nivel do GT ou mais especificas.')
+        if gen > 0:
+            print(f'Adicionalmente, {gen:.1f}% atingiram o nivel de genero.')
+        if fam > 0:
+            print(f'{fam:.1f}% atingiram o nivel de familia.')
+        if sup > 0:
+            print(f'O restante {sup:.1f}% correspondeu a niveis superiores ou distantes.')
+        if sem > 0:
+            print(f'{sem:.1f}% nao apresentaram relacao taxonomica.')
         print('='*60)
 
     def _read_ground_truths_with_ids(self, img_path, class_names):
@@ -588,7 +595,6 @@ class TrainThread(QThread):
     def _save_hierarchical_results(self, config, metrics, box_map50, sample_size):
         result_file = Path(config.get('project', 'runs')) / 'hierarchical_eval.json'
         result_file.parent.mkdir(parents=True, exist_ok=True)
-        # Calibracao
         trad_raw = metrics['traditional_mAP']
         h_raw = metrics['h_mAP']
         calib = box_map50 / trad_raw if trad_raw > 0 else 1.0
