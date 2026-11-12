@@ -1,8 +1,31 @@
-﻿# Modelos de ML - nunca versionar
+﻿# Ambiente virtual
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# IDE
+.idea/
+.vscode/
+
+# Variáveis de ambiente
+.env
+
+# Modelos de ML - nunca versionar
 **/*.pt
+**/*.pth
 **/*.onnx
 **/*.engine
+
 # Modelos treinados gerados automaticamente
 modelos/best_model_fast.pth
+
+# Saídas e datasets
 seafloor_output/
 seafloor_training_data/
+runs/

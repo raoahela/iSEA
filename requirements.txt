@@ -1,4 +1,4 @@
-numpy
+numpy>=2.5.4
 torch
 torchvision
 ultralytics
@@ -6,8 +6,8 @@ opencv-python
 PyYAML
 PyQt6
 pandas
-scikit-image
-scikit-learn
+scikit-image==0.27.0rc1
+scikit-learn>=1.9.1
 scipy
-matplotlib
+matplotlib>=3.11.0
 requests
