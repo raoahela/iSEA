@@ -44,7 +44,7 @@ The tool supports:
 ## Installation
 
 ### Prerequisites
-- Python 3.10+
+- Python 3.13 (or 3.14) — **Python 3.15 is not recommended** due to missing pre-built wheels for some scientific packages (e.g., PyYAML, scikit-image) on Windows.
 - CUDA-capable GPU (recommended for YOLO tracking and SAM)
 
 ### Setup
