@@ -1041,6 +1041,7 @@ class VideoAnnotator(QMainWindow):
         self.detections_dock.detections_list.clear()
         self.detections_dock.all_detections.clear()
         self.dataset_mode = False
+        self.video_label.dataset_mode = False
         self.video_label.frame_annotations = {}
         self.video_label.active_annotations = []
         self.video_label.segmentation_annotations = []
@@ -1192,6 +1193,9 @@ class VideoAnnotator(QMainWindow):
     def set_current_frame(self, frame_num):
         if self.cap is None or self.live_mode:
             return
+        self.video_label._clear_preview()
+        self.video_label.update()
+
         self.sync_frame_num(frame_num)
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
         self.video_label.current_frame_num = frame_num
@@ -2068,6 +2072,7 @@ class VideoAnnotator(QMainWindow):
         self.total_frames = len(self.dataset_frames)
         self.paused = True
         self.dataset_mode = True
+        self.video_label.dataset_mode = True
         self.dataset_index = 0
         self.detections_dock.detections_list.clear()
         self.detections_dock.all_detections.clear()
@@ -2081,6 +2086,9 @@ class VideoAnnotator(QMainWindow):
     def load_dataset_frame(self, index):
         if not (0 <= index < len(self.dataset_frames)):
             return
+        # Limpa preview (não clicada) e confirmadas do frame anterior
+        self.video_label._clear_preview()
+        self.video_label.update()
 
         self.dataset_index = index
         image_path, original_num, dataset_idx = self.dataset_frames[index]
@@ -2390,6 +2398,7 @@ class VideoAnnotator(QMainWindow):
             valid_count = self._load_annotations_from_labels(image_files, labels_dir, class_id_map)
 
             self.dataset_mode = True
+            self.video_label.dataset_mode = True
             if self.dataset_frames:
                 self._setup_imported_dataset(classes, len(image_files), valid_count)
 
@@ -2529,6 +2538,7 @@ class VideoAnnotator(QMainWindow):
         self.total_frames = len(self.dataset_frames)
         self.paused = True
         self.dataset_mode = True
+        self.video_label.dataset_mode = True
         self.dataset_index = 0
         self.video_label.current_frame_num = 0
         self.video_label.update_active_annotations()
@@ -2767,15 +2777,54 @@ class VideoAnnotator(QMainWindow):
 
     def init_sam2(self):
         try:
-            self.sam2_thread = SAM2Thread("sam2.1_b.pt", self)
+            self.sam2_thread = SAM2Thread("sam2.1_s.pt", self)
             self.sam2_thread.mask_preview.connect(self.on_hover_mask_preview)
+            self.sam2_thread.mask_finished.connect(self.on_mask_finished)   # NOVO
             self.sam2_thread.error.connect(self.on_sam2_error)
             self.sam2_thread.start()
+
+            # Back-pressure / deduplicação de cliques
+            self._sam_busy = False
+            self._sam_pending_job = None
         except Exception:
             self.status_label.setText(self.texts.get("sam2_init_failed", "SAM 2 initialization failed"))
 
     def on_sam2_error(self, error_msg):
+        self._sam_busy = False
         self.status_label.setText(self.texts["sam2_error"].format(error_msg))
+        self.video_label.set_sam_processing(False)
+
+    def on_mask_finished(self, mask_data, original_frame, frame_num):
+        """Resultado de clique (preview=False). Salva a segmentação."""
+        self._sam_busy = False
+        self.video_label.set_sam_processing(False)
+
+        job = self._sam_pending_job
+        self._sam_pending_job = None
+
+        # Verifica se ainda estamos no mesmo frame/imagem do clique
+        current = getattr(self, 'dataset_index', 0) if getattr(self, 'dataset_mode', False) else self.current_frame_num
+        if frame_num != current:
+            return
+
+        # Constrói a anotação a partir do job (estado do momento do clique)
+        if job is not None:
+            seg_annotation = {
+                "type": "segmentation",
+                "frame_num": frame_num,
+                "class": self.current_class if hasattr(self, 'current_class') else "unknown",
+                "segmentation": mask_data.get("segmentation"),
+                "all_masks": mask_data.get("all_masks"),
+                "prompts": mask_data.get("prompts"),
+                "video_path": getattr(self, 'video_path', 'Live'),
+            }
+            if getattr(self, 'dataset_mode', False):
+                seg_annotation["video_path"] = "Live"
+                seg_annotation["image_name"] = getattr(self, 'dataset_image_name', '')
+
+            # Desenha o resultado final e salva
+            self.video_label.set_preview_mask(mask_data)
+            self.on_mask_confirmed(seg_annotation)
 
     def toggle_hover_segmentation(self):
         """Ativa/desativa modo hover-to-segment via SAM 2."""
@@ -2846,9 +2895,9 @@ class VideoAnnotator(QMainWindow):
 
     def on_hover_mask_preview(self, mask_data, original_frame, frame_num):
         self.video_label.set_sam_processing(False)
+        self._sam_busy = False          # NOVO
         if not self.hover_segmentation_mode:
             return
-
         current = getattr(self, 'dataset_index', 0) if getattr(self, 'dataset_mode', False) else self.current_frame_num
         if frame_num != current:
             return
@@ -4311,6 +4360,7 @@ class VideoAnnotator(QMainWindow):
         # Configurar modo dataset
         self._reset_dataset_state()
         self.dataset_mode = True
+        self.video_label.dataset_mode = True
         self.dataset_index = 0
 
         # IMPORTANTE: repopular frame_annotations DEPOIS do reset
@@ -4524,6 +4574,7 @@ class VideoAnnotator(QMainWindow):
 
         # Configurar estado dataset
         self.dataset_mode = True
+        self.video_label.dataset_mode = True
         self.dataset_index = 0
         self.all_detections = all_detections.copy()
 

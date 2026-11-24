@@ -66,6 +66,7 @@ class VideoLabel(QLabel):
 
         # Máscaras confirmadas (clicadas)
         self.confirmed_masks = {}
+        self.dataset_mode = False
 
         # ===== CURSORES CONTEXTUAIS =====
         self.cursor_default = QCursor(Qt.CursorShape.ArrowCursor)
@@ -189,17 +190,21 @@ class VideoLabel(QLabel):
         main_window = self.window()
         original_width, original_height = self._get_original_dimensions()
 
-        # FILTRO: Rejeitar máscaras que cobrem mais de 80% do frame (provavelmente fundo)
-        mask_area = np.sum(self.preview_mask > 0)
-        total_area = self.preview_mask.shape[0] * self.preview_mask.shape[1]
-        coverage = mask_area / total_area
+        if self.preview_mask is None:
+            return
 
+        # ---- LOG: estatísticas da máscara ----
+        mask_area = int(np.sum(self.preview_mask > 0))
+        total_area = self.preview_mask.shape[0] * self.preview_mask.shape[1]
+        coverage = mask_area / total_area if total_area > 0 else 0.0
+
+        # FILTRO: Rejeitar máscaras que cobrem mais de 80% do frame (provavelmente fundo)
         if coverage > 0.80:
             self._clear_preview()
             main_window.status_label.setText("SAM: Nenhum objeto detectado no ponto")
             return
 
-        if coverage < 0.001:
+        if coverage < 0.0001:
             self._clear_preview()
             return
 
@@ -229,6 +234,7 @@ class VideoLabel(QLabel):
             frame_num = getattr(main_window, 'dataset_index', main_window.current_frame_num)
         else:
             frame_num = main_window.current_frame_num
+
 
         seg_annotation = {
             "type": "segmentation",
@@ -610,10 +616,17 @@ class VideoLabel(QLabel):
 
         # Desenhar máscaras confirmadas (segmentações)
         if hasattr(self, 'confirmed_masks') and self.confirmed_masks:
+            current = self.current_frame_num
+            is_dataset = getattr(self, 'dataset_mode', False)
             for frame, masks in self.confirmed_masks.items():
-                if frame == self.current_frame_num:
-                    for mask_data in masks:
-                        self._draw_confirmed_mask(painter, video_rect, mask_data)
+                if is_dataset:
+                    if frame != current:
+                        continue
+                else:
+                    if frame not in (current, current - 1):
+                        continue
+                for mask_data in masks:
+                    self._draw_confirmed_mask(painter, video_rect, mask_data)
 
         # Desenhar anotações ativas (bbox manuais) - EXCLUIR segmentações
         for ann in self.active_annotations:

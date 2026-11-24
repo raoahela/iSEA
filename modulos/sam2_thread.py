@@ -1,9 +1,9 @@
 """
-iSEA - SAM 2 Thread 
+iSEA - SAM 2 Thread
 """
 
 from pathlib import Path
-from PyQt6.QtCore import QThread, pyqtSignal, QMutex
+from PyQt6.QtCore import QThread, pyqtSignal, QMutex, QMutexLocker, QWaitCondition
 from ultralytics import SAM
 import numpy as np
 import torch
@@ -18,7 +18,7 @@ class SAM2Thread(QThread):
     mask_preview = pyqtSignal(dict, object, int)
     error = pyqtSignal(str)
 
-    def __init__(self, model_name="sam2.1_b.pt", parent=None):
+    def __init__(self, model_name="sam2.1_s.pt", parent=None):
         super().__init__(parent)
         self.model = None
         self.model_name = model_name
@@ -34,46 +34,60 @@ class SAM2Thread(QThread):
 
         # Controle de execução
         self.running = True
-        self.mutex = QMutex()
+        self.model_loaded = False
+        self.load_error = None
 
-        self.load_model()
+        # Sincronização
+        self.mutex = QMutex()
+        self.condition = QWaitCondition()
+
+    # =====================================================================
+    # CARREGAMENTO DO MODELO (executa na thread, não na GUI)
+    # =====================================================================
 
     def load_model(self):
-        """Carrega o modelo SAM do disco."""
+        """Carrega o modelo SAM do disco. Executado dentro de run()."""
         try:
             model_path = Path(resource_path("modelos")) / self.model_name
+
             if not model_path.exists():
-                raise FileNotFoundError(f"Model not found: {model_path}")
+                self.load_error = f"Model not found: {model_path}"
+                return
 
             self.model = SAM(str(model_path))
             self.model.to(self.device)
+            self.model_loaded = True
 
         except Exception as e:
-            self.error.emit(str(e))
+            self.load_error = f"Failed to load SAM model: {e}"
             self.model = None
 
-    def set_frame_and_prompts(self, frame, frame_num, prompts, prompt_type="points", preview=False):
+    # =====================================================================
+    # API PÚBLICA
+    # =====================================================================
+
+    def set_frame_and_prompts(self, frame, frame_num, prompts,
+                              prompt_type="points", preview=False):
         """Define frame e prompts para processamento na próxima iteração."""
-        self.mutex.lock()
-        self.current_frame = frame
-        self.current_frame_num = frame_num
-        self.prompts = prompts
-        self.prompt_type = prompt_type
-        self.preview_mode = preview
-        self.mutex.unlock()
+        with QMutexLocker(self.mutex):
+            self.current_frame = frame
+            self.current_frame_num = frame_num
+            self.prompts = prompts
+            self.prompt_type = prompt_type
+            self.preview_mode = preview
+            self.condition.wakeOne()
 
     def clear_prompts(self):
         """Limpa prompts e frame pendentes."""
-        self.mutex.lock()
-        self.prompts = []
-        self.current_frame = None
-        self.mutex.unlock()
+        with QMutexLocker(self.mutex):
+            self.prompts = []
+            self.current_frame = None
 
     def stop(self):
         """Sinaliza parada da thread e aguarda término."""
-        self.mutex.lock()
-        self.running = False
-        self.mutex.unlock()
+        with QMutexLocker(self.mutex):
+            self.running = False
+            self.condition.wakeOne()
         self.wait()
 
     # =====================================================================
@@ -82,36 +96,32 @@ class SAM2Thread(QThread):
 
     def run(self):
         """Loop principal da thread."""
+        self.load_model()
+
+        if self.load_error:
+            self.error.emit(self.load_error)
+            return
+
         while True:
-            frame, frame_num, prompts, prompt_type, is_preview, should_run = self._get_work()
+            with QMutexLocker(self.mutex):
+                while self.current_frame is None and self.running:
+                    self.condition.wait(self.mutex)
 
-            if not should_run:
-                break
+                if not self.running:
+                    break
 
-            if frame is None:
-                self.msleep(5)
-                continue
+                frame = self.current_frame
+                frame_num = self.current_frame_num
+                prompts = list(self.prompts) if self.prompts else []
+                prompt_type = self.prompt_type
+                is_preview = self.preview_mode
+                self.current_frame = None  # evita reprocessar
 
             if self.model is None:
+                self.error.emit("SAM model not available")
                 continue
 
             self._process_frame(frame, frame_num, prompts, prompt_type, is_preview)
-
-    def _get_work(self):
-        """Obtém estado atual de forma thread-safe."""
-        self.mutex.lock()
-        frame = self.current_frame
-        frame_num = self.current_frame_num
-        prompts = list(self.prompts) if self.prompts else []
-        prompt_type = self.prompt_type
-        is_preview = self.preview_mode
-        should_run = self.running
-
-        # Limpar para não reprocessar
-        self.current_frame = None
-        self.mutex.unlock()
-
-        return frame, frame_num, prompts, prompt_type, is_preview, should_run
 
     # =====================================================================
     # PROCESSAMENTO DE FRAME
@@ -122,51 +132,61 @@ class SAM2Thread(QThread):
         try:
             kwargs = self._build_kwargs(prompts, prompt_type)
             if kwargs is None:
+                if not is_preview:
+                    self.error.emit("Invalid or empty prompts")
                 return
 
-            results = self.model.predict(source=frame, device=self.device, verbose=False, **kwargs)
+            results = self.model.predict(
+                source=frame, device=self.device, verbose=False, **kwargs
+            )
 
             if not (results and len(results) > 0):
                 if not is_preview:
                     self.error.emit("No results from SAM model")
                 return
 
-            self._handle_result(results[0], frame, frame_num, prompts, prompt_type, is_preview)
+            self._handle_result(results[0], frame, frame_num,
+                                prompts, prompt_type, is_preview)
 
         except Exception as e:
+            msg = f"SAM 2 error: {str(e)}"
             if not is_preview:
-                self.error.emit(f"SAM 2 error: {str(e)}")
+                self.error.emit(msg)
 
     def _build_kwargs(self, prompts, prompt_type):
         """Constrói kwargs para model.predict baseado no tipo de prompt."""
         if prompt_type == "points":
             if not prompts:
                 return None
-            normalized = self._normalize_points(prompts)
+            try:
+                normalized = self._normalize_points(prompts)
+            except ValueError as e:
+                return None
+            if not normalized:
+                return None
             return {
                 "points": normalized,
-                "labels": [1] * len(normalized)
+                "labels": [1] * len(normalized),
             }
 
         elif prompt_type == "bboxes":
+            if not prompts:
+                return None
             return {"bboxes": prompts}
 
         return None
 
     def _normalize_points(self, prompts):
         """Normaliza qualquer formato de pontos para [[x, y], ...]."""
-        # Formato 1: [[x, y]] — lista de pontos
-        if (len(prompts) == 1 and isinstance(prompts[0], (list, tuple))
-                and len(prompts[0]) == 2):
-            return [[float(prompts[0][0]), float(prompts[0][1])]]
+        arr = np.asarray(prompts, dtype=float)
 
-        # Formato 2: [x, y] — lista plana
-        if (len(prompts) == 2 and isinstance(prompts[0], (int, float))
-                and isinstance(prompts[1], (int, float))):
-            return [[float(prompts[0]), float(prompts[1])]]
+        if arr.ndim == 1 and arr.size == 2:
+            return [[float(arr[0]), float(arr[1])]]
 
-        # Formato 3: [[x1,y1], [x2,y2]] — múltiplos pontos já normalizados
-        return prompts
+        if arr.ndim == 2 and arr.shape[1] == 2:
+            return [[float(x), float(y)] for x, y in arr]
+
+        raise ValueError(f"Invalid point format: shape={arr.shape}")
 
     # =====================================================================
     # TRATAMENTO DE RESULTADO
@@ -181,7 +201,8 @@ class SAM2Thread(QThread):
                 self.error.emit("No masks generated")
             return
 
-        num_masks = masks.data.shape[0] if hasattr(masks.data, 'shape') else len(masks.data)
+        data = masks.data
+        num_masks = data.shape[0] if hasattr(data, 'shape') else len(data)
         if num_masks == 0:
             if not is_preview:
                 self.error.emit("No masks generated")
@@ -196,18 +217,42 @@ class SAM2Thread(QThread):
 
     def _build_mask_data(self, masks, frame, prompts, prompt_type):
         """Constrói dicionário com dados da máscara."""
-        mask_tensor = masks.data[0]
-        mask_np = mask_tensor.cpu().numpy()
+        data = masks.data
 
-        # Aplicar threshold se for probabilidades (float)
-        if mask_np.dtype in (np.float32, np.float64):
-            mask_np = (mask_np > 0.5).astype(np.uint8)
+        first = data[0]
+        if torch.is_tensor(first):
+            first = first.detach().cpu().numpy()
+        else:
+            first = np.asarray(first)
+
+        if first.ndim == 3 and first.shape[0] == 1:
+            first = first[0]
+
+
+        if first.dtype in (np.float32, np.float64):
+            for thr in (0.3, 0.4, 0.5):
+                n = int((first > thr).sum())
+            first = (first > 0.5).astype(np.uint8)
+
+        n_mask = int(first.sum())
+
+        all_masks = []
+        for m in data:
+            if torch.is_tensor(m):
+                m_np = m.detach().cpu().numpy()
+            else:
+                m_np = np.asarray(m)
+            if m_np.ndim == 3 and m_np.shape[0] == 1:
+                m_np = m_np[0]
+            if m_np.dtype in (np.float32, np.float64):
+                m_np = (m_np > 0.5).astype(np.uint8)
+            all_masks.append(m_np)
 
         return {
-            "segmentation": mask_np,
-            "all_masks": [m.cpu().numpy() for m in masks.data],
-            "scores": [0.95] * len(masks.data),
+            "segmentation": first,
+            "all_masks": all_masks,
+            "scores": [0.95] * len(all_masks),
             "orig_shape": getattr(masks, 'orig_shape', frame.shape[:2]),
             "prompts": prompts,
-            "prompt_type": prompt_type
+            "prompt_type": prompt_type,
         }
