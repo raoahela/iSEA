@@ -2962,7 +2962,7 @@ class VideoAnnotator(QMainWindow):
             self.seafloor_classifier = SeafloorClassifier(normalize_colors=False, fast_mode=True, language=self.language)
 
         if not self.seafloor_classifier.has_trained_model():
-            model_path = self.seafloor_training_dir / "seafloor_model.pt"
+            model_path = Path(resource_path("modelos")) / "seafloor_model.pt"
             config_path = self.seafloor_training_dir / "classifier_config.json"
             if model_path.exists():
                 try:
@@ -3019,7 +3019,7 @@ class VideoAnnotator(QMainWindow):
                 self.seafloor_classifier = SeafloorClassifier(normalize_colors=False, fast_mode=True, language=self.language)
 
             if not self.seafloor_classifier.has_trained_model():
-                model_path = self.seafloor_training_dir / "seafloor_model.pt"
+                model_path = Path(resource_path("modelos")) / "seafloor_model.pt"
                 if model_path.exists():
                     try:
                         self.seafloor_classifier.load_model(str(model_path))

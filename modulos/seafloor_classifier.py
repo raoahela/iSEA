@@ -23,6 +23,7 @@ from sklearn.model_selection import train_test_split
 from scipy.optimize import linear_sum_assignment
 import torch
 import torch.nn as nn
+from .utils import resource_path
 import torchvision.transforms as transforms
 from torchvision import models
 from torch.utils.data import Dataset, DataLoader
@@ -1090,7 +1091,9 @@ class FastInceptionV3Classifier:
         print(f"{'='*60}")
 
         # Save best model
-        best_path = Path("best_model_fast.pth").resolve()
+        models_dir = Path(resource_path("modelos"))
+        models_dir.mkdir(exist_ok=True)
+        best_path = (models_dir / "best_model_fast.pth").resolve()
         torch.save(self.model.state_dict(), str(best_path))
         print(_t("model_state_dict_saved", self.language, best_path))
 
@@ -1310,7 +1313,7 @@ class SeafloorClassifier:
         self.adaptive_ensemble = None
 
         # Criar diretórios
-        self.output_dir.mkdir(exist_ok=True)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
         for sub in ["clusters", "normalized", "supervised", "pca_plots", "cropped", 
                     "train", "val", "test"]:
             (self.output_dir / sub).mkdir(exist_ok=True)
@@ -1524,8 +1527,13 @@ class SeafloorClassifier:
     def save_model(self, path=None):
         if self.trained_classifier is None:
             raise ValueError(_t("no_trained_model_to_save", self.language))
-        path = Path(path) if path else (self.output_dir / "seafloor_model.pt")
-        path.parent.mkdir(parents=True, exist_ok=True)
+        if path is None:
+            models_dir = Path(resource_path("modelos"))
+            models_dir.mkdir(parents=True, exist_ok=True)
+            path = models_dir / "seafloor_model.pt"
+        else:
+            path = Path(path)
+            path.parent.mkdir(parents=True, exist_ok=True)
         checkpoint = {
             "model_state_dict": self.trained_classifier.model.state_dict(),
             "n_classes": self.trained_classifier.n_classes,
@@ -1554,7 +1562,7 @@ class SeafloorClassifier:
         path = Path(path)
         if not path.exists():
             raise FileNotFoundError(_t("model_not_found", self.language, path))
-        checkpoint = torch.load(str(path), map_location="cpu", weights_only=True)
+        checkpoint = torch.load(str(path), map_location="cpu", weights_only=False)
         # Migrar nomes antigos → novos em todo o checkpoint
         checkpoint = self._migrate_class_names(checkpoint)
         self.class_names = checkpoint.get("class_names", self.class_names)

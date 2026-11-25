@@ -16,12 +16,6 @@ __pycache__/
 # Variáveis de ambiente
 .env
 
-# Modelos de ML - nunca versionar
-**/*.pt
-**/*.pth
-**/*.onnx
-**/*.engine
-
 # Modelos treinados gerados automaticamente
 modelos/best_model_fast.pth
 
