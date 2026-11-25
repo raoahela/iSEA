@@ -334,6 +334,7 @@ class VideoAnnotator(QMainWindow):
         # Dock de detecções
         self.detections_dock = DetectionsDockWidget(self)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.detections_dock)
+        self.detections_dock.detection_removed.connect(self.on_detection_removed) 
 
         # Layout lateral de botões
         button_frame = QFrame()
@@ -2825,6 +2826,28 @@ class VideoAnnotator(QMainWindow):
             # Desenha o resultado final e salva
             self.video_label.set_preview_mask(mask_data)
             self.on_mask_confirmed(seg_annotation)
+
+    def on_detection_removed(self, detection):
+        """Chamado quando o dock remove uma detecção.Sincroniza o VideoLabel para apagar a máscara do overlay."""
+        if detection.get("type") != "segmentation":
+            return
+
+        video_label = getattr(self, "video_label", None)
+        if video_label is None:
+            return
+
+        # O remove_annotation do VideoLabel já remove de confirmed_masks,
+        # active_annotations, frame_annotations, segmentation_annotations
+        # e chama self.update() no final.
+        video_label.remove_annotation(detection)
+
+        # Também remove do histórico da main window (se ainda estiver lá)
+        if hasattr(self, "segmentation_annotations"):
+            self.segmentation_annotations = [
+                s for s in self.segmentation_annotations if s is not detection
+            ]
+
+        video_label.update()
 
     def toggle_hover_segmentation(self):
         """Ativa/desativa modo hover-to-segment via SAM 2."""

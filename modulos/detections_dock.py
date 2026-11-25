@@ -1,15 +1,16 @@
 import os
 import cv2
-from PyQt6.QtCore import Qt, QRect
+from PyQt6.QtCore import Qt, QRect, pyqtSignal
 from PyQt6.QtWidgets import (QDockWidget, QWidget, QVBoxLayout, QHBoxLayout,
-                            QLabel, QComboBox, QDoubleSpinBox, QPushButton, QMessageBox, QVBoxLayout,
+                            QLabel, QComboBox, QDoubleSpinBox, QPushButton, QMessageBox,
                             QListWidget, QGroupBox, QCompleter, QListWidgetItem, QDialog)
 from PyQt6.QtGui import QIcon, QColor, QPixmap, QPainter, QPen, QImage
-from PyQt6.QtCore import Qt
 from .translations import TEXTS
 
 
 class DetectionsDockWidget(QDockWidget):
+    detection_removed = pyqtSignal(object)
+
     def __init__(self, main_window):
         super().__init__(main_window.texts["history"], main_window)
         self.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | 
@@ -163,7 +164,6 @@ class DetectionsDockWidget(QDockWidget):
         self.class_filter.blockSignals(False)
 
     def update_language(self, lang):
-
         self.language = lang
         self.texts = TEXTS[lang]
         
@@ -357,7 +357,6 @@ class DetectionsDockWidget(QDockWidget):
         self.detections_list.setItemWidget(item, widget)
 
     def delete_single_detection(self, button):
- 
         for i in range(self.detections_list.count()):
             item = self.detections_list.item(i)
             widget = self.detections_list.itemWidget(item)
@@ -378,6 +377,7 @@ class DetectionsDockWidget(QDockWidget):
                 # Removes from internal list 
                 if detection in self.all_detections:
                     self.all_detections.remove(detection)
+                    self.detection_removed.emit(detection)
 
                 break
             
@@ -385,6 +385,7 @@ class DetectionsDockWidget(QDockWidget):
         for i, d in enumerate(self.all_detections):
             if d is detection:
                 self.all_detections.pop(i)
+                self.detection_removed.emit(detection)
                 self.apply_filters()
                 return 
             

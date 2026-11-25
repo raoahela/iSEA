@@ -149,21 +149,31 @@ class VideoLabel(QLabel):
         return frame_x, frame_y
 
     def mousePressEvent(self, event):
-        if not self.drawing_enabled and not self.hover_segmentation_enabled:
-            return
-
         video_rect = self.get_video_rect()
         pos = event.position().toPoint()
-        if not video_rect.contains(pos):
-            return
 
-        if event.button() == Qt.MouseButton.LeftButton:
-            # Check delete button
+        # ===== NOVO: X das máscaras confirmadas (funciona SEMPRE, sem precisar de modo) =====
+        if event.button() == Qt.MouseButton.LeftButton and video_rect and video_rect.contains(pos):
+            frame = self.current_frame_num
+            for mask_data in self.confirmed_masks.get(frame, []):
+                dr = mask_data.get("delete_rect")
+                if dr and dr.contains(pos):
+                    self.remove_annotation(mask_data)
+                    return
+
+            # X das bboxes também sempre (opcional — antes só funcionava em modo anotação)
             for ann in self.active_annotations:
                 if ann.get("delete_rect") and ann["delete_rect"].contains(pos):
                     self.remove_annotation(ann)
                     return
 
+        if not self.drawing_enabled and not self.hover_segmentation_enabled:
+            return
+
+        if not video_rect.contains(pos):
+            return
+
+        if event.button() == Qt.MouseButton.LeftButton:
             # HOVER MODE: clique confirma a máscara preview
             if self.hover_segmentation_enabled and self.preview_active and self.preview_mask is not None:
                 self._confirm_preview_mask()
@@ -840,6 +850,27 @@ class VideoLabel(QLabel):
             cx = int(np.mean(xs)) + video_rect.left()
             cy = int(np.mean(ys)) + video_rect.top()
             painter.drawText(cx - 30, cy, label)
+
+            # ===== NOVO: X de delete no canto superior direito da máscara =====
+            x1_px = int(np.min(xs))
+            y1_px = int(np.min(ys))
+            x2_px = int(np.max(xs))
+
+            delete_rect = QRect(
+                video_rect.left() + x2_px - self.delete_box_size - self.delete_box_offset,
+                video_rect.top() + y1_px + self.delete_box_offset,
+                self.delete_box_size,
+                self.delete_box_size
+            )
+            painter.fillRect(delete_rect, QColor(255, 80, 80, 220))
+            painter.setPen(QPen(Qt.GlobalColor.white, 2))
+            dx1, dy1 = delete_rect.left() + 4, delete_rect.top() + 4
+            dx2, dy2 = delete_rect.right() - 4, delete_rect.bottom() - 4
+            painter.drawLine(dx1, dy1, dx2, dy2)
+            painter.drawLine(dx1, dy2, dx2, dy1)
+
+            # Guarda o rect no dict para detecção de clique no mousePressEvent
+            mask_data["delete_rect"] = delete_rect
 
     def get_frame_coordinates(self, pos):
         video_rect = self.get_video_rect()
